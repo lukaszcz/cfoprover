@@ -1,0 +1,32 @@
+cabal-version:       >=1.10
+
+name:                cprover
+version:             0.1.0.0
+-- synopsis:
+-- description:
+-- bug-reports:
+-- license:
+license-file:        LICENSE
+author:              Lukasz Czajka
+maintainer:          lukaszcz@mimuw.edu.pl
+copyright:           Lukasz Czajka
+-- category:
+build-type:          Simple
+
+executable cprover
+  main-is:             Main.hs
+  other-modules:       Logic Search
+  -- other-extensions:
+  ghc-options:         -W -Werror -Wno-unused-top-binds -O2
+  build-depends:       base >=4.12,
+                       list-extras,
+                       unification-fd,
+                       pqueue,
+                       containers,
+                       unordered-containers,
+                       mtl,
+                       text,
+                       attoparsec,
+                       tptp
+  hs-source-dirs:      src
+  default-language:    Haskell2010
