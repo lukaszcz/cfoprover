@@ -21,7 +21,7 @@ executable cprover
   build-depends:       base >=4.12,
                        list-extras,
                        unification-fd,
-                       pqueue,
+                       logict,
                        containers,
                        unordered-containers,
                        mtl,
