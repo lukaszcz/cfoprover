@@ -74,7 +74,7 @@ maxSymbol (Exists s a) = max s (maxSymbol a)
 
 data Idx = ILeft | IRight
 
-data Elim p = EApp p | EProj Idx
+data Elim p = EApp p | EAApp Term | EProj Idx
 
 class Substitutable a where
     subst :: [(Symbol,Term)] -> a -> a
@@ -120,12 +120,13 @@ class Proof p where
     mkALam :: Symbol -> p -> p
     mkAApp :: p -> Term -> p
     mkExIntro :: Symbol -> Formula -> Term -> p -> p
-    mkExElim :: p -> p
+    mkExElim :: p -> p -> p
     mkElim :: Symbol -> [Elim p] -> p
     mkElim s elims = mk (mkVar s) elims
         where
           mk p [] = p
           mk p (EApp p' : es) = mk (mkApp p p') es
+          mk p (EAApp t : es) = mk (mkAApp p t) es
           mk p (EProj i : es) = mk (mkProj i p) es
 
 instance Proof () where
@@ -139,7 +140,7 @@ instance Proof () where
     mkALam _ _ = ()
     mkAApp _ _ = ()
     mkExIntro _ _ _ _ = ()
-    mkExElim _ = ()
+    mkExElim _ _ = ()
     mkElim _ _ = ()
 
 data PTerm = PVar Symbol
@@ -152,7 +153,7 @@ data PTerm = PVar Symbol
            | ALambda Symbol PTerm
            | AApp PTerm Term
            | ExIntro Symbol Formula Term PTerm -- ExIntro s a tt t :: Exists s a
-           | ExElim PTerm
+           | ExElim PTerm PTerm
 
 instance Proof PTerm where
     mkVar = PVar
@@ -222,10 +223,14 @@ infer' env (ExIntro s a tt t) = do
     a' <- infer' env t
     guard $ subst [(s,tt)] a == a'
     return $ Exists s a
-infer' env (ExElim t) = do
+infer' env (ExElim t t') = do
     a <- infer' env t
     case a of
-        Exists _ a' -> return a'
+        Exists s a' -> do
+            b <- infer' env t'
+            case b of
+                Forall s' (Impl b1 b2) | b1 == subst [(s,tvar s')] a' -> return b2
+                _ -> Nothing
         _ -> Nothing
 
 infer :: PTerm -> Maybe Formula
@@ -239,8 +244,10 @@ check t a = case infer t of
 {------------------------------------}
 {- Optimized formula representation -}
 
-data CElim = Elims [Elim PFormula] | ECase [Elim PFormula] Idx
-            | EEx [Elim PFormula] Symbol
+data CElim =
+      Elims [Elim PFormula]
+    | ECase [Elim PFormula] Idx Formula [Eliminator] Formula [Eliminator]
+    | EEx [Elim PFormula] Symbol Formula [Eliminator]
 
 data Eliminator = Eliminator {
       target :: Atom
@@ -258,12 +265,17 @@ data PFormula = PAtom Atom
 
 instance Substitutable (Elim PFormula) where
     subst env (EApp phi) = EApp (subst env phi)
+    subst env (EAApp t) = EAApp (subst env t)
     subst _ x@(EProj _) = x
 
 instance Substitutable CElim where
     subst env (Elims es) = Elims $ map (subst env) es
-    subst env (ECase es idx) = ECase (map (subst env) es) idx
-    subst env (EEx es s) = EEx (map (subst env) es) s
+    subst env (ECase es idx a1 es1 a2 es2) =
+        ECase (map (subst env) es) idx (subst env a1) (map (subst env) es1)
+                (subst env a2) (map (subst env) es2)
+    subst env (EEx es s a eas) =
+        EEx (map (subst env) es) s (subst env' a) (map (subst env') eas)
+        where env' = filter ((/=) s . fst) env
 
 instance Substitutable Eliminator where
     subst env e = e { target = second (map (subst env)) (target e)
@@ -275,15 +287,15 @@ instance Substitutable PFormula where
     subst env (PAnd phi1 phi2) = PAnd (subst env phi1) (subst env phi2)
     subst env (POr phi phi1 phi2) = POr phi (subst env phi1) (subst env phi2)
     subst env (PForall x phi) = PForall x (csubst env' phi)
-        where env' = filter (not . (==) x . fst) env
+        where env' = filter ((/=) x . fst) env
     subst env (PExists x a phi) = PExists x a (csubst env' phi)
-        where env' = filter (not . (==) x . fst) env
+        where env' = filter ((/=) x . fst) env
 
 prependElim :: Elim PFormula -> [CElim] -> [CElim]
 prependElim e [] = [Elims [e]]
 prependElim e (Elims es : elims) = Elims (e : es) : elims
-prependElim e (ECase es idx : elims) = ECase (e : es) idx : elims
-prependElim e (EEx es s : elims) = EEx (e : es) s : elims
+prependElim e (ECase es idx a1 es1 a2 es2 : elims) = ECase (e : es) idx a1 es1 a2 es2 : elims
+prependElim e (EEx es s a eas : elims) = EEx (e : es) s a eas : elims
 
 compileFormula :: Formula -> PFormula
 compileFormula (Atom a) = PAtom a
@@ -304,14 +316,19 @@ compileElims (And a b) =
     map (\e -> e{elims = prependElim (EProj ILeft) (elims e)}) (compileElims a) ++
     map (\e -> e{elims = prependElim (EProj IRight) (elims e)}) (compileElims b)
 compileElims (Or a b) =
-    map (\e -> e{ elims = ECase [] ILeft : elims e
-                , cost = cost e + 10 }) (compileElims a) ++
-    map (\e -> e{ elims = ECase [] IRight : elims e
-                , cost = cost e + 10 }) (compileElims b)
+    map (\e -> e{ elims = ECase [] ILeft a eas b ebs : elims e
+                , cost = cost e + 10 }) eas ++
+    map (\e -> e{ elims = ECase [] IRight b ebs a eas : elims e
+                , cost = cost e + 10 }) ebs
+    where
+        eas = compileElims a
+        ebs = compileElims b
 compileElims (Forall s a) =
     map (\e -> e{ evars = s : evars e
                 , cost = cost e +
                     if any (toccurs s) (snd (target e)) then 1 else 5 })
         (compileElims a)
 compileElims (Exists s a) =
-    map (\e -> e{elims = EEx [] s : elims e}) (compileElims a)
+    map (\e -> e{elims = EEx [] s a eas : elims e}) eas
+    where
+        eas = compileElims a
