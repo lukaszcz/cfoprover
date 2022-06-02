@@ -13,6 +13,8 @@ import Data.Functor
 import Data.Bifunctor
 import Data.IntMap.Strict (IntMap)
 import qualified Data.IntMap.Strict as SymbolMap
+import Data.DList (DList)
+import qualified Data.DList as DList
 import GHC.Base (maxInt)
 
 import Formula
@@ -160,15 +162,25 @@ generateTerm = return $ tvar 0
 resolveVars :: [IntVar] -> ProofMonad p ()
 resolveVars = mapM_ (\v -> generateTerm >>= \t -> lift $ bindVar v t)
 
+resolveTermVars :: Term -> ProofMonad p ()
+resolveTermVars t = lift (getFreeVars t) >>= resolveVars
+
 minVarDepthInTerm :: SymbolMap Int -> Term -> Int
-minVarDepthInTerm _ _ = 0
+minVarDepthInTerm m (UTerm (Var x)) = m SymbolMap.! x
+minVarDepthInTerm m (UTerm (Fun s args)) =
+  foldl' (\d t -> min d (minVarDepthInTerm m t)) (m SymbolMap.! s) args
+minVarDepthInTerm _ _ = error "minVarDepthInTerm"
 
-minVarDepth :: SymbolMap Int -> [Term] -> ProofMonad p Int
+minVarDepth :: Traversable t => SymbolMap Int -> t Term -> ProofMonad p Int
 minVarDepth m ts = do
-  foldM (\d t -> min d minVarDepthInTerm) maxInt (lift $ applyBindingsAll ts)
+  ts' <- applyBindingsAll ts
+  return $ foldl' minDepth maxInt ts'
+  where
+    minDepth d t = min d (minVarDepthInTerm m t)
 
-{- search' depth depthMap formula = (minDepth, proof) -}
-search' :: Proof p => Int -> SymbolMap Int -> PFormula -> ProofMonad p (Int, p)
+{- search' depth depthMap formula = (minDepth, terms, proof) -}
+search' :: Proof p => Int -> SymbolMap Int -> PFormula ->
+  ProofMonad p (Int, DList Term, p)
 search' 0 _ _ = empty
 search' n m (PAtom a) = do
   elims <- findElims a
@@ -176,29 +188,31 @@ search' n m (PAtom a) = do
 search' n m a@(PImpl _ _) = intros' n m a
 search' n m a@(PForall _ _) = intros' n m a
 search' n m (PAnd a b) = do
-  (d1, p1) <- search' n m a
-  (d2, p2) <- search' n m b
+  (d1, ts1, p1) <- search' n m a
+  (d2, ts2, p2) <- search' n m b
   sp <- getSpine
-  return (min d1 d2, sp (mkConj p1 p2))
+  return (min d1 d2, DList.append ts1 ts2, sp (mkConj p1 p2))
 search' n m (POr phi a b) = aux ILeft a <|> aux IRight b
   where
     aux idx c = do
-      (d, p) <- search' n m c
-      return (d, mkInj idx phi p)
+      (d, ts, p) <- search' n m c
+      return (d, ts, mkInj idx phi p)
 search' n m (PExists s phi a) = do
   evar <- getFreeVar
   let v = UVar evar
-  (d, p) <- search' n m (subst [(s,v)] a)
-  return (d, mkExIntro s phi v p)
+  (d, ts, p) <- search' n m (subst [(s,v)] a)
+  return (d, ts, mkExIntro s phi v p)
 
-intros' :: Proof p => Int -> SymbolMap Int -> PFormula -> ProofMonad p (Int, p)
+intros' :: Proof p => Int -> SymbolMap Int -> PFormula ->
+  ProofMonad p (Int, DList Term, p)
 intros' n m a = do
   pushContext
   r <- intros n m a
   popContext
   return r
 
-intros :: Proof p => Int -> SymbolMap Int -> PFormula -> ProofMonad p (Int, p)
+intros :: Proof p => Int -> SymbolMap Int -> PFormula ->
+  ProofMonad p (Int, DList Term, p)
 intros n m (PImpl (a, elims) b) = do
   s <- nextSymbol
   addElims s elims
@@ -209,39 +223,42 @@ intros n m (PForall s a) = do
   intros n (SymbolMap.insert s' n m) (subst [(s,tvar s')] a)
 intros n m x = do
   pushGoal x
-  (d, p) <- search' n m x
+  (d, ts, p) <- search' n m x
   popGoal
   sp <- getSpine
-  return (d, sp p)
+  return (d, ts, sp p)
 
 applyElims :: Proof p => Symbol -> Int -> SymbolMap Int -> [Elim PFormula] ->
-  ProofMonad p (Int, p)
+  ProofMonad p (Int, DList Term, p)
 applyElims s n m es = do
-  (d, ps) <- foldr (search_subgoal n m) (return (n, [])) es
-  return (min d (SymbolMap.findWithDefault d s m), mkElim s ps)
+  (d, ts, ps) <- foldr (search_subgoal n m) (return (n, DList.empty, [])) es
+  return (min d (SymbolMap.findWithDefault d s m), ts, mkElim s ps)
   where
     search_subgoal n m (EApp x) a = do
-      (d, p) <- search' n m x
-      (d', ps) <- a
-      return (min d d', (EApp p):ps)
+      (d, ts, p) <- search' n m x
+      (d', ts', ps) <- a
+      return (min d d', DList.append ts ts', (EApp p):ps)
     search_subgoal _ _ (EAApp t) a = do
-      (d, ps) <- a
-      return (d, (EAApp t):ps)
+      (d, ts, ps) <- a
+      return (d, DList.cons t ts, (EAApp t):ps)
     search_subgoal _ _ (EProj i) a = do
-      (d, ps) <- a
-      return (d, (EProj i):ps)
+      (d, ts, ps) <- a
+      return (d, ts, (EProj i):ps)
 
 applyCElims :: Proof p => Int -> SymbolMap Int -> Symbol -> [CElim] ->
-  ProofMonad p (Int, p)
+  ProofMonad p (Int, DList Term, p)
 applyCElims n m s [Elims es] = do
   applyElims s n m es
 applyCElims n m s (ECase es idx phi1 es1 phi2 es2 : ces) = do
-  (d, p) <- applyElims s n m es
-  s' <- withSubgoal (n - d) (solveCaseSubgoal d p)
-  applyCElims n (SymbolMap.insert s' d m) s' ces
+  (d, ts, p) <- applyElims s n m es
+  mapM_ resolveTermVars ts
+  dv <- minVarDepth m ts
+  let d' = min d dv
+  s' <- withSubgoal (n - d') (solveCaseSubgoal d p)
+  applyCElims n (SymbolMap.insert s' d' m) s' ces
   where
     solveCaseSubgoal d p g = do
-      (_, pg) <- search' d m (PImpl (phi2, es2) g)
+      (_, _, pg) <- search' d m (PImpl (phi2, es2) g)
       s' <- nextSymbol
       updateSpine (\sp p' ->
         case idx of
@@ -250,10 +267,13 @@ applyCElims n m s (ECase es idx phi1 es1 phi2 es2 : ces) = do
       addElims s' es1
       return s'
 applyCElims n m s (EEx es sa a eas : ces) = do
-  (d, p) <- applyElims s n m es
-  (sa', s') <- withSubgoal (n - d) (insertExElim p)
+  (d, ts, p) <- applyElims s n m es
+  mapM_ resolveTermVars ts
+  dv <- minVarDepth m ts
+  let d' = min d dv
+  (sa', s') <- withSubgoal (n - d') (insertExElim p)
   addElims s' (map (subst [(sa,tvar sa')]) eas)
-  applyCElims n (SymbolMap.insert s' d (SymbolMap.insert sa' d m)) s' ces
+  applyCElims n (SymbolMap.insert s' d' (SymbolMap.insert sa' d' m)) s' ces
   where
     insertExElim p _ = do
       sa' <- nextSymbol
@@ -264,18 +284,21 @@ applyCElims n m s (EEx es sa a eas : ces) = do
 applyCElims _ _ _ _ = empty
 
 applyElim :: Proof p => Int -> SymbolMap Int -> Symbol -> Eliminator -> Atom ->
-  ProofMonad p (Int, p)
+  ProofMonad p (Int, DList Term, p)
 applyElim n m s e a = do
   env <- mapM (\s -> getFreeVar >>= \v -> return (s,UVar v)) (evars e)
   let a' = second (map (csubst env)) (target e)
   unifyAtoms a a'
-  let es = map (csubst env) (Logic.elims e)
+  let es = map (csubst env) (Formula.elims e)
   applyCElims n m s es
 
-search :: Proof p => Int -> Formula -> [(p, IntBindingState TermF)]
+search :: Proof p => Int -> Formula -> [p]
 search n a =
   observeAll $
-  runIntBindingT $
+  evalIntBindingT $
   evalStateT
-    (snd <$> intros n SymbolMap.empty (compileFormula a))
+    (intros n SymbolMap.empty (compileFormula a) >>= applyTermBindings')
     (initProofState (maxSymbol a + 1))
+  where
+    applyTermBindings' (_, _, p) =
+      applyTermBindings (\t -> resolveTermVars t >> applyBindings t) p

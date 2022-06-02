@@ -1,6 +1,7 @@
 {-# LANGUAGE DeriveTraversable, FlexibleInstances #-}
-module Logic where
+module Formula where
 
+import Data.Functor
 import Data.Bifunctor
 import Data.List as List
 import Data.List.Extras.Pair
@@ -128,6 +129,7 @@ class Proof p where
           mk p (EApp p' : es) = mk (mkApp p p') es
           mk p (EAApp t : es) = mk (mkAApp p t) es
           mk p (EProj i : es) = mk (mkProj i p) es
+    applyTermBindings :: Monad m => (Term -> m Term) -> p -> m p
 
 instance Proof () where
     mkVar _ = ()
@@ -142,6 +144,7 @@ instance Proof () where
     mkExIntro _ _ _ _ = ()
     mkExElim _ _ = ()
     mkElim _ _ = ()
+    applyTermBindings _ _ = return ()
 
 data PTerm = PVar Symbol
            | Lambda Symbol Formula PTerm
@@ -155,6 +158,38 @@ data PTerm = PVar Symbol
            | ExIntro Symbol Formula Term PTerm -- ExIntro s a tt t :: Exists s a
            | ExElim PTerm PTerm
 
+mapTerms :: Monad m => (Term -> m Term) -> PTerm -> m PTerm
+mapTerms _ x@(PVar _) = return x
+mapTerms f (Lambda s phi x) = mapTerms f x <&> Lambda s phi
+mapTerms f (App x y) = do
+    x' <- mapTerms f x
+    y' <- mapTerms f y
+    return $ App x' y'
+mapTerms f (Conj x y) = do
+    x' <- mapTerms f x
+    y' <- mapTerms f y
+    return $ Conj x' y'
+mapTerms f (Proj idx x) = mapTerms f x <&> Proj idx
+mapTerms f (Inj idx phi x) = mapTerms f x <&> Inj idx phi
+mapTerms f (Case x y z) =  do
+    x' <- mapTerms f x
+    y' <- mapTerms f y
+    z' <- mapTerms f z
+    return $ Case x' y' z'
+mapTerms f (ALambda s x) = mapTerms f x <&> ALambda s
+mapTerms f (AApp x t) = do
+    x' <- mapTerms f x
+    t' <- f t
+    return $ AApp x' t'
+mapTerms f (ExIntro s phi t x) =  do
+    x' <- mapTerms f x
+    t' <- f t
+    return $ ExIntro s phi t' x'
+mapTerms f (ExElim x y) =  do
+    x' <- mapTerms f x
+    y' <- mapTerms f y
+    return $ ExElim x' y'
+
 instance Proof PTerm where
     mkVar = PVar
     mkLam = Lambda
@@ -167,6 +202,7 @@ instance Proof PTerm where
     mkAApp = AApp
     mkExIntro = ExIntro
     mkExElim = ExElim
+    applyTermBindings = mapTerms
 
 {------------------------------------}
 {- Proof checking -}

@@ -24,6 +24,7 @@ executable cprover
                        logict,
                        containers,
                        unordered-containers,
+                       dlist,
                        mtl,
                        text,
                        attoparsec,
