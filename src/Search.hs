@@ -201,7 +201,7 @@ search' n m (PExists s phi a) = do
   evar <- getFreeVar
   let v = UVar evar
   (d, ts, p) <- search' n m (subst [(s,v)] a)
-  return (d, ts, mkExIntro s phi v p)
+  return (d, DList.cons v ts, mkExIntro s phi v p)
 
 intros' :: Proof p => Int -> SymbolMap Int -> PFormula ->
   ProofMonad p (Int, DList Term, p)
@@ -286,11 +286,15 @@ applyCElims _ _ _ _ = empty
 applyElim :: Proof p => Int -> SymbolMap Int -> Symbol -> Eliminator -> Atom ->
   ProofMonad p (Int, DList Term, p)
 applyElim n m s e a = do
-  env <- mapM (\s -> getFreeVar >>= \v -> return (s,UVar v)) (evars e)
-  let a' = second (map (csubst env)) (target e)
-  unifyAtoms a a'
-  let es = map (csubst env) (Formula.elims e)
-  applyCElims n m s es
+  vs <- mapM (lift . getFreeVars) (snd a)
+  if null vs then once cont else cont
+  where
+    cont = do
+      env <- mapM (\s -> getFreeVar >>= \v -> return (s,UVar v)) (evars e)
+      let a' = second (map (csubst env)) (target e)
+      unifyAtoms a a'
+      let es = map (csubst env) (Formula.elims e)
+      applyCElims n m s es
 
 search :: Proof p => Int -> Formula -> [p]
 search n a =
