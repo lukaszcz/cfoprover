@@ -15,7 +15,7 @@ build-type:          Simple
 
 executable cprover
   main-is:             Main.hs
-  other-modules:       Logic Search
+  other-modules:       Formula Search
   -- other-extensions:
   ghc-options:         -W -Werror -Wno-unused-top-binds -O2
   build-depends:       base >=4.12,

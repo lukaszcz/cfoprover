@@ -13,8 +13,9 @@ import Data.Functor
 import Data.Bifunctor
 import Data.IntMap.Strict (IntMap)
 import qualified Data.IntMap.Strict as SymbolMap
+import GHC.Base (maxInt)
 
-import Logic
+import Formula
 
 type SymbolMap = IntMap
 
@@ -153,6 +154,19 @@ unifyAtoms :: Atom -> Atom -> ProofMonad p ()
 unifyAtoms (s1, _) (s2, _) | s1 /= s2 = empty
 unifyAtoms (_, args1) (_, args2) = zipWithM_ unify args1 args2
 
+generateTerm :: ProofMonad p Term
+generateTerm = return $ tvar 0
+
+resolveVars :: [IntVar] -> ProofMonad p ()
+resolveVars = mapM_ (\v -> generateTerm >>= \t -> lift $ bindVar v t)
+
+minVarDepthInTerm :: SymbolMap Int -> Term -> Int
+minVarDepthInTerm _ _ = 0
+
+minVarDepth :: SymbolMap Int -> [Term] -> ProofMonad p Int
+minVarDepth m ts = do
+  foldM (\d t -> min d minVarDepthInTerm) maxInt (lift $ applyBindingsAll ts)
+
 {- search' depth depthMap formula = (minDepth, proof) -}
 search' :: Proof p => Int -> SymbolMap Int -> PFormula -> ProofMonad p (Int, p)
 search' 0 _ _ = empty
@@ -258,8 +272,10 @@ applyElim n m s e a = do
   let es = map (csubst env) (Logic.elims e)
   applyCElims n m s es
 
-search :: Proof p => Int -> Formula -> [p]
+search :: Proof p => Int -> Formula -> [(p, IntBindingState TermF)]
 search n a =
   observeAll $
-  evalIntBindingT $
-  evalStateT (snd <$> intros n SymbolMap.empty (compileFormula a)) (initProofState 0)
+  runIntBindingT $
+  evalStateT
+    (snd <$> intros n SymbolMap.empty (compileFormula a))
+    (initProofState (maxSymbol a + 1))
