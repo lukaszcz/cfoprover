@@ -240,9 +240,8 @@ checkParams ts = do
 search' :: Proof p => Int -> [Term] -> PFormula ->
   ProofMonad p (IntSet, DList Term, p)
 search' 0 _ _ = empty
-search' n env (PAtom a) = do
-  elims <- findElims a
-  foldr (\(s,e) acc -> applyElim (n - 1) s e (subst env a) <|> acc) empty elims
+search' _ _ (PAtom (s, _)) | s == sBottom = empty
+search' n env (PAtom a) = searchElim n env a
 search' n env a@(PImpl _ _) = intros' n env a
 search' n env a@(PForall _ _) = intros' n env a
 search' n env (PAnd a b) = do
@@ -259,6 +258,11 @@ search' n env (PExists _ phi a) = do
   v <- nextEVar
   (su, ts, p) <- search' n (v:env) a
   return (su, DList.cons v ts, mkExIntro (subst env phi) v p)
+
+searchElim :: Proof p => Int -> [Term] -> Atom -> ProofMonad p (IntSet, DList Term, p)
+searchElim n env a = do
+  elims <- findElims a
+  foldr (\(s,e) acc -> applyElim (n - 1) s e (subst env a) <|> acc) empty elims
 
 intros' :: Proof p => Int -> [Term] -> PFormula ->
   ProofMonad p (IntSet, DList Term, p)
@@ -288,10 +292,23 @@ intros n env (PForall _ a) = do
   intros n (tfun s [] : env) a
 intros n env x = do
   pushGoal x
-  (su, ts, p) <- search' n env x
+  (su, ts, p) <- searchAfterIntros n env x
   popGoal
   sp <- getSpine
   return (su, ts, sp p)
+
+searchAfterIntros :: Proof p => Int -> [Term] -> PFormula ->
+  ProofMonad p (IntSet, DList Term, p)
+searchAfterIntros 0 _ _ = empty
+searchAfterIntros n env (PAtom a) = do
+  es1 <- findElims a
+  es2 <- findElims aBottom
+  foldr apElim empty (elims es1 es2)
+  where
+    elims es1 es2 = sortBy (\x y -> compare (cost (snd x)) (cost (snd y))) (es1 ++ es2)
+    apElim (s, e) acc | s == sBottom = applyElim (n - 1) s e aBottom <|> acc
+    apElim (s, e) acc = applyElim (n - 1) s e (subst env a) <|> acc
+searchAfterIntros n env g = search' n env g <|> searchElim n env aBottom
 
 applyElims :: Proof p => Int -> [Term] -> Symbol -> [Elim PFormula] ->
   ProofMonad p (IntSet, DList Term, p)

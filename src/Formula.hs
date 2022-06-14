@@ -47,6 +47,36 @@ tfun f args = UTerm $ Fun f args
 
 type Atom = (Symbol, [Term])
 
+sBottom :: Symbol
+sBottom = Symbol "False" 0
+
+aBottom :: Atom
+aBottom = (sBottom, [])
+
+fBottom :: Formula
+fBottom = Atom aBottom
+
+sTop :: Symbol
+sTop = Symbol "True" 1
+
+aTop :: Atom
+aTop = (sTop, [])
+
+fTop :: Formula
+fTop = Atom aTop
+
+sEquality :: Symbol
+sEquality = Symbol "=" 2
+
+aEqual :: Term -> Term -> Atom
+aEqual t1 t2 = (sEquality, [t1, t2])
+
+fEqual :: Term -> Term -> Formula
+fEqual t1 t2 = Atom (aEqual t1 t2)
+
+tMinSymbol :: Int
+tMinSymbol = 3
+
 data Formula = Atom Atom
             | Impl Formula Formula
             | And Formula Formula

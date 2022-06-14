@@ -17,7 +17,8 @@ import Data.TPTP.Parse.Text
 import Data.TPTP
 
 data FormulaSig a b = FormulaStruct {
-      tVar :: String -> Int -> a
+      tMinSymbol :: Int
+    , tVar :: String -> Int -> a
     , tFun :: String -> Int -> [a] -> a
     , tPred :: String -> Int -> [a] -> b
     , tEqual :: a -> a -> b
@@ -34,8 +35,7 @@ data FormulaSig a b = FormulaStruct {
 
 -- | map names to identifier numbers
 data TPTPState = TPTPState {
-      predsNum :: Int
-    , funsNum :: Int
+      symbolsNum :: Int
     , preds :: HashMap String Int
     , funs :: HashMap String Int
     }
@@ -70,7 +70,7 @@ translate s units = do
         case l2 of
           [] -> error "no conjectures found"
           h:t -> return (tAssume s l1 (foldl' (tAnd s) h t))
-  return $ runTranslator result
+  return $ runTranslator (tMinSymbol s) result
     where
       isConj (Unit _ (Formula (Standard Conjecture) _) _) = True
       isConj _ = False
@@ -90,21 +90,14 @@ flattenUnit (Include _ (Just _)) =
 
 type Translator = State TPTPState
 
-runTranslator :: Translator a -> (a, TPTPState)
-runTranslator tr = runState tr (TPTPState 0 0 HashMap.empty HashMap.empty)
+runTranslator :: Int -> Translator a -> (a, TPTPState)
+runTranslator n tr = runState tr (TPTPState n HashMap.empty HashMap.empty)
 
-getPredIdent :: Translator Int
-getPredIdent = do
+getIdent :: Translator Int
+getIdent = do
   s <- get
-  let i = predsNum s
-  put (s{predsNum = i + 1})
-  return i
-
-getFunIdent :: Translator Int
-getFunIdent = do
-  s <- get
-  let i = funsNum s
-  put (s{funsNum = i + 1})
+  let i = symbolsNum s
+  put (s{symbolsNum = i + 1})
   return i
 
 addPred :: String -> Translator Int
@@ -113,7 +106,7 @@ addPred name = do
   case HashMap.lookup name (preds s) of
     Just k -> return k
     Nothing -> do
-      k <- getPredIdent
+      k <- getIdent
       put (s{preds = HashMap.insert name k (preds s)})
       return k
 
@@ -123,7 +116,7 @@ addFun name = do
   case HashMap.lookup name (funs s) of
     Just k -> return k
     Nothing -> do
-      k <- getFunIdent
+      k <- getIdent
       put (s{funs = HashMap.insert name k (funs s)})
       return k
 
