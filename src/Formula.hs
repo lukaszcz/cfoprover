@@ -10,7 +10,7 @@ import Control.Unification
 import Control.Unification.IntVar
 
 {------------------------------------}
-{- Terms, formulas, proof terms -}
+{- Terms & formulas -}
 
 data Symbol = Symbol { sname :: String, sid :: Int }
 
@@ -47,6 +47,27 @@ tfun f args = UTerm $ Fun f args
 
 type Atom = (Symbol, [Term])
 
+data Formula = Atom Atom
+            | Impl Formula Formula
+            | And Formula Formula
+            | Or Formula Formula
+            | Forall String Formula
+            | Exists String Formula
+
+mapAtoms' :: (Int -> [String] -> Atom -> Atom) -> Int -> [String] -> Formula -> Formula
+mapAtoms' f n env (Atom a) = Atom (f n env a)
+mapAtoms' f n env (Impl x y) = Impl (mapAtoms' f n env x) (mapAtoms' f n env y)
+mapAtoms' f n env (And x y) = And (mapAtoms' f n env x) (mapAtoms' f n env y)
+mapAtoms' f n env (Or x y) = Or (mapAtoms' f n env x) (mapAtoms' f n env y)
+mapAtoms' f n env (Forall s x) = Forall s (mapAtoms' f (n + 1) (s:env) x)
+mapAtoms' f n env (Exists s x) = Exists s (mapAtoms' f (n + 1) (s:env) x)
+
+mapAtoms :: (Int -> [String] -> Atom -> Atom) -> Formula -> Formula
+mapAtoms f = mapAtoms' f 0 []
+
+{----------------------------------------------------------------------------}
+{- Standard symbols -}
+
 sBottom :: Symbol
 sBottom = Symbol "False" 0
 
@@ -77,27 +98,8 @@ fEqual t1 t2 = Atom (aEqual t1 t2)
 tMinSymbol :: Int
 tMinSymbol = 3
 
-data Formula = Atom Atom
-            | Impl Formula Formula
-            | And Formula Formula
-            | Or Formula Formula
-            | Forall String Formula
-            | Exists String Formula
-
-mapAtoms' :: (Int -> [String] -> Atom -> Atom) -> Int -> [String] -> Formula -> Formula
-mapAtoms' f n env (Atom a) = Atom (f n env a)
-mapAtoms' f n env (Impl x y) = Impl (mapAtoms' f n env x) (mapAtoms' f n env y)
-mapAtoms' f n env (And x y) = And (mapAtoms' f n env x) (mapAtoms' f n env y)
-mapAtoms' f n env (Or x y) = Or (mapAtoms' f n env x) (mapAtoms' f n env y)
-mapAtoms' f n env (Forall s x) = Forall s (mapAtoms' f (n + 1) (s:env) x)
-mapAtoms' f n env (Exists s x) = Exists s (mapAtoms' f (n + 1) (s:env) x)
-
-mapAtoms :: (Int -> [String] -> Atom -> Atom) -> Formula -> Formula
-mapAtoms f = mapAtoms' f 0 []
-
-data Idx = ILeft | IRight
-
-data Elim p = EApp p | EAApp Term | EProj Idx
+{------------------------------------------------------------------}
+{- substitution -}
 
 class Substitutable a where
     -- nsubst n env t -> substitute variable with index (x + n) by (env !! x)
@@ -124,11 +126,6 @@ instance Abstractable Term where
     nabstract n s (UTerm (Fun f args)) = UTerm (Fun f (map (nabstract n s) args))
     nabstract _ _ t = t
 
-instance Substitutable a => Substitutable (Elim a) where
-    nsubst n env (EApp x) = EApp (nsubst n env x)
-    nsubst n env (EAApp t) = EAApp (nsubst n env t)
-    nsubst _ _ e@(EProj _) = e
-
 instance Substitutable Atom where
     nsubst n env (s, args) = (s, map (nsubst n env) args)
 
@@ -149,6 +146,68 @@ instance Eq Formula where
     (Forall _ a1) == (Forall _ a2) = a1 == a2
     (Exists _ a1) == (Exists _ a2) = a1 == a2
     _ == _ = False
+
+{-------------------------------------------------------------------}
+{- show & read formulas -}
+
+showsTerm :: Term -> ShowS
+showsTerm (UVar v) = showString "?" . shows (getVarID v)
+showsTerm (UTerm (Var x)) = showString "_?v" . shows x
+showsTerm (UTerm (Fun s args)) = shows (sname s) . sargs
+    where
+        sargs =
+            if null args then
+                id
+            else
+                showChar '(' .
+                foldl (\a x -> a . showString ", " . showsTerm x) (showsTerm (head args)) (tail args) .
+                showChar ')'
+
+showTerm :: Term -> String
+showTerm t = showsTerm t ""
+
+showsFormula :: [String] -> Int -> Formula -> ShowS
+showsFormula env _ (Atom (s, args)) =
+    showsTerm (UTerm (Fun s (map (subst (map (\x -> tfun (Symbol x 0) []) env)) args)))
+showsFormula env p (Impl a b) = showParen (p > impl_prec) $
+    showsFormula env (impl_prec+1) a . showString " -> " .
+    showsFormula env impl_prec b
+    where
+        impl_prec = 5
+showsFormula env p (And a b) = showParen (p > and_prec) $
+    showsFormula env (and_prec+1) a . showString " /\\ " .
+    showsFormula env (and_prec+1) b
+    where
+        and_prec = 6
+showsFormula env p (Or a b) = showParen (p > or_prec) $
+    showsFormula env (or_prec+1) a . showString " /\\ " .
+    showsFormula env (or_prec+1) b
+    where
+        or_prec = 6
+showsFormula env p (Forall s a) = showParen (p > forall_prec) $
+    showString "forall " . showString s . showChar ' ' .
+    showsFormula (s:env) forall_prec a
+    where
+        forall_prec = 7
+showsFormula env p (Exists s a) = showParen (p > exists_prec) $
+    showString "exists " . showString s . showChar ' ' .
+    showsFormula (s:env) exists_prec a
+    where
+        exists_prec = 7
+
+instance Show Formula where
+    showsPrec = showsFormula []
+
+{-------------------------------------------------------------------}
+{- proof terms -}
+
+data Idx = ILeft | IRight
+data Elim p = EApp p | EAApp Term | EProj Idx
+
+instance Substitutable a => Substitutable (Elim a) where
+    nsubst n env (EApp x) = EApp (nsubst n env x)
+    nsubst n env (EAApp t) = EAApp (nsubst n env t)
+    nsubst _ _ e@(EProj _) = e
 
 class Proof p where
     mkVar :: Symbol -> p
