@@ -5,28 +5,33 @@ import Control.Monad.State
 import Control.Monad.Logic
 import Control.Monad.Error.Class
 import Control.Applicative
-import Control.Unification
+import qualified Control.Unification as U
 import Control.Unification.IntVar
 import Data.List
 import Data.Maybe
 import Data.Functor
 import Data.Bifunctor
 import Data.IntMap.Strict (IntMap)
-import qualified Data.IntMap.Strict as SymbolMap
+import qualified Data.IntMap.Strict as IntMap
+import Data.IntSet (IntSet)
+import qualified Data.IntSet as IntSet
 import Data.DList (DList)
 import qualified Data.DList as DList
 import GHC.Base (maxInt)
 
 import Formula
 
-type SymbolMap = IntMap
-
-newtype Context = Context {
-      elims :: SymbolMap [(Symbol,Eliminator)]
+data Context = Context {
+      -- 'elims' maps target head symbol ids to:
+      -- (context variable symbol, depth of variable, eliminator)
+      elims :: IntMap [(Symbol,Eliminator)]
+      -- 'params' contains symbol ids of the parameters in the context
+    , params :: IntSet
+      -- invariant: eliminators in a context contain no free term variables
     }
 
 emptyContext :: Context
-emptyContext = Context{Search.elims = SymbolMap.empty}
+emptyContext = Context{Search.elims = IntMap.empty, Search.params = IntSet.empty}
 
 type Spine p = p -> p
 {- given a proof for the spine hole, returns a complete proof term -}
@@ -38,7 +43,11 @@ data ProofState p = ProofState {
       contexts :: [Context]
     , goals :: [PFormula]
     , spines :: [Spine p]
-    , freeSymbol :: Symbol
+    , depthMaps :: [IntMap Int]
+    -- depthMaps: maps symbols to depths at which they were introduced
+    , contextDepth :: Int
+    -- contextDepth = length contexts - 1
+    , freeSymbolId :: Int
     }
 
 initProofState :: Int -> ProofState p
@@ -46,7 +55,9 @@ initProofState n = ProofState {
     contexts = [emptyContext]
   , goals = []
   , spines = [emptySpine]
-  , freeSymbol = n
+  , depthMaps = [IntMap.empty]
+  , contextDepth = 0
+  , freeSymbolId = n
   }
 
 type ProofMonad p = StateT (ProofState p) (IntBindingT TermF Logic)
@@ -55,28 +66,28 @@ instance MonadLogic m => MonadError () (IntBindingT t m) where
     throwError () = empty
     catchError x f = ifte x return (f ())
 
-instance Fallible t v () where
+instance U.Fallible t v () where
     occursFailure _ _ = ()
     mismatchFailure _ _ = ()
 
-getFreeVar :: ProofMonad p IntVar
-getFreeVar = lift freeVar
+nextEVar :: ProofMonad p Term
+nextEVar = U.UVar <$> lift U.freeVar
 
 lookup :: Symbol -> Context -> [(Symbol,Eliminator)]
 lookup s ctx =
-    fromMaybe [] (SymbolMap.lookup s (Search.elims ctx))
+    fromMaybe [] (IntMap.lookup (sid s) (Search.elims ctx))
 
 getContexts :: ProofMonad p [Context]
 getContexts = get <&> contexts
 
 getContext :: ProofMonad p Context
-getContext = get <&> (head . contexts)
+getContext = get <&> head . contexts
 
 getSpines :: ProofMonad p [Spine p]
 getSpines = get <&> spines
 
 getSpine :: ProofMonad p (Spine p)
-getSpine = get <&> (head . spines)
+getSpine = get <&> head . spines
 
 setSpine :: Spine p -> ProofMonad p ()
 setSpine sp = do
@@ -87,6 +98,12 @@ updateSpine :: (Spine p -> Spine p) -> ProofMonad p ()
 updateSpine f = do
   ps <- get
   put ps{spines = f (head (spines ps)) : tail (spines ps)}
+
+getDepthMap :: ProofMonad p (IntMap Int)
+getDepthMap = get <&> head . depthMaps
+
+getDepth :: Int -> ProofMonad p Int
+getDepth id = getDepthMap <&> fromJust . IntMap.lookup id
 
 findElims' :: Atom -> [Context] -> [(Symbol,Eliminator)]
 findElims' (pred, _) ctxs =
@@ -101,7 +118,7 @@ findElims a = getContexts <&> findElims' a
 addElims' :: Symbol -> [Eliminator] -> Context -> Context
 addElims' s es ctx = ctx{Search.elims = elims'}
   where
-    elims' = foldr (\e -> SymbolMap.insertWith (++) (fst (target e)) [(s,e)])
+    elims' = foldr (\e -> IntMap.insertWith (++) (sid $ fst (target e)) [(s,e)])
                     (Search.elims ctx)
                     es
 
@@ -109,17 +126,36 @@ addElims :: Symbol -> [Eliminator] -> ProofMonad p ()
 addElims s elims = do
   ps <- get
   let (ctx:cs) = contexts ps
-  put ps{contexts = addElims' s elims ctx : cs}
+  put ps{ contexts = addElims' s elims ctx : cs
+        , depthMaps =
+          IntMap.insert (sid s) (contextDepth ps) (head (depthMaps ps)) : tail (depthMaps ps) }
+
+addParam' :: Symbol -> Context -> Context
+addParam' s ctx = ctx{ Search.params = IntSet.insert (sid s) (Search.params ctx) }
+
+addParam :: Symbol -> ProofMonad p ()
+addParam s = do
+  ps <- get
+  let (ctx:cs) = contexts ps
+  put ps{ contexts = addParam' s ctx : cs
+        , depthMaps =
+          IntMap.insert (sid s) (contextDepth ps) (head (depthMaps ps)) : tail (depthMaps ps) }
 
 pushContext :: ProofMonad p ()
 pushContext = do
   ps <- get
-  put ps{contexts = emptyContext : contexts ps, spines = emptySpine : spines ps}
+  put ps{ contexts = emptyContext : contexts ps
+        , spines = emptySpine : spines ps
+        , depthMaps = head (depthMaps ps) : depthMaps ps
+        , contextDepth = contextDepth ps + 1 }
 
 popContext :: ProofMonad p ()
 popContext = do
   ps <- get
-  put ps{contexts = tail (contexts ps), spines = tail (spines ps)}
+  put ps{ contexts = tail (contexts ps)
+        , spines = tail (spines ps)
+        , depthMaps = tail (depthMaps ps)
+        , contextDepth = contextDepth ps - 1 }
 
 pushGoal :: PFormula -> ProofMonad p ()
 pushGoal g = do
@@ -132,177 +168,227 @@ popGoal = do
   put ps{goals = tail (goals ps)}
 
 withSubgoal :: Proof p => Int -> (PFormula -> ProofMonad p a) -> ProofMonad p a
-withSubgoal k f = do
+withSubgoal d f = do
   ps <- get
+  let k = contextDepth ps - d
   let (ctxs', ctxs) = splitAt k (contexts ps)
   let (gs', g:gs) = splitAt k (goals ps)
   let (sps', sps) = splitAt k (spines ps)
-  put ps{contexts = ctxs, goals = g:gs, spines = sps}
+  let (mps', mps) = splitAt k (depthMaps ps)
+  put ps{ contexts = ctxs
+        , goals = g:gs
+        , spines = sps
+        , depthMaps = mps
+        , contextDepth = d }
   a <- f g
   ps' <- get
-  put ps'{contexts = ctxs' ++ contexts ps'
+  put ps'{  contexts = ctxs' ++ contexts ps'
           , goals = gs' ++ goals ps'
-          , spines = sps' ++ spines ps'}
+          , spines = sps' ++ spines ps'
+          , depthMaps =
+              foldr (\mp mps -> IntMap.union mp (head (depthMaps ps')) : mps)
+                (depthMaps ps')
+                mps'
+          , contextDepth = contextDepth ps }
   return a
 
 nextSymbol :: ProofMonad p Symbol
 nextSymbol = do
   ps <- get
-  let s = freeSymbol ps
-  put ps{freeSymbol = s + 1}
-  return s
+  let id = freeSymbolId ps
+  put ps{ freeSymbolId = id + 1 }
+  return $ Symbol "" id
 
 unifyAtoms :: Atom -> Atom -> ProofMonad p ()
 unifyAtoms (s1, _) (s2, _) | s1 /= s2 = empty
-unifyAtoms (_, args1) (_, args2) = zipWithM_ unify args1 args2
+unifyAtoms (_, args1) (_, args2) = zipWithM_ U.unify args1 args2
 
 generateTerm :: ProofMonad p Term
-generateTerm = return $ tvar 0
+generateTerm = return $ tfun (Symbol "DUM" 0) []
 
-resolveVars :: [IntVar] -> ProofMonad p ()
-resolveVars = mapM_ (\v -> generateTerm >>= \t -> lift $ bindVar v t)
+resolveEVars :: [IntVar] -> ProofMonad p ()
+resolveEVars = mapM_ (\v -> generateTerm >>= \t -> lift $ U.bindVar v t)
 
-resolveTermVars :: Term -> ProofMonad p ()
-resolveTermVars t = lift (getFreeVars t) >>= resolveVars
+resolveTermEVars :: Term -> ProofMonad p ()
+resolveTermEVars t = lift (U.getFreeVars t) >>= resolveEVars
 
-minVarDepthInTerm :: SymbolMap Int -> Term -> Int
-minVarDepthInTerm m (UTerm (Var x)) = m SymbolMap.! x
-minVarDepthInTerm m (UTerm (Fun s args)) =
-  foldl' (\d t -> min d (minVarDepthInTerm m t)) (m SymbolMap.! s) args
-minVarDepthInTerm _ _ = error "minVarDepthInTerm"
+getMaxDepth :: IntSet -> ProofMonad p Int
+getMaxDepth su = do
+  mp <- getDepthMap
+  return $ IntSet.foldl' (\a x -> max a (fromJust $ IntMap.lookup x mp)) 0 su
 
-minVarDepth :: Traversable t => SymbolMap Int -> t Term -> ProofMonad p Int
-minVarDepth m ts = do
-  ts' <- applyBindingsAll ts
-  return $ foldl' minDepth maxInt ts'
-  where
-    minDepth d t = min d (minVarDepthInTerm m t)
+checkParamsInTerm :: IntSet -> Term -> ProofMonad p IntSet
+checkParamsInTerm su (U.UTerm (Fun s args)) = do
+  ps <- get
+  let d = contextDepth ps
+  let mp = head (depthMaps ps)
+  if fromMaybe maxInt (IntMap.lookup (sid s) mp) > d then
+    empty
+  else
+    foldl' (\a x -> a >>= \su -> checkParamsInTerm su x)
+          (return $ IntSet.insert (sid s) su)
+          args
+checkParamsInTerm _ _ = error "checkParamsInTerm"
 
-{- search' depth depthMap formula = (minDepth, terms, proof) -}
-search' :: Proof p => Int -> SymbolMap Int -> PFormula ->
-  ProofMonad p (Int, DList Term, p)
+checkParams :: Traversable t => t Term -> ProofMonad p IntSet
+checkParams ts = do
+  ts' <- U.applyBindingsAll ts
+  foldl' (\a x -> a >>= \su -> checkParamsInTerm su x) (return IntSet.empty) ts'
+
+{- search limit (argument to search') should not be confused with context depth -}
+{- search' limit env formula = (symbolsUsed, terms (evars), proof) -}
+search' :: Proof p => Int -> [Term] -> PFormula ->
+  ProofMonad p (IntSet, DList Term, p)
 search' 0 _ _ = empty
-search' n m (PAtom a) = do
+search' n env (PAtom a) = do
   elims <- findElims a
-  foldr (\(s,e) acc -> applyElim (n - 1) m s e a <|> acc) empty elims
-search' n m a@(PImpl _ _) = intros' n m a
-search' n m a@(PForall _ _) = intros' n m a
-search' n m (PAnd a b) = do
-  (d1, ts1, p1) <- search' n m a
-  (d2, ts2, p2) <- search' n m b
+  foldr (\(s,e) acc -> applyElim (n - 1) s e (subst env a) <|> acc) empty elims
+search' n env a@(PImpl _ _) = intros' n env a
+search' n env a@(PForall _ _) = intros' n env a
+search' n env (PAnd a b) = do
+  (su1, ts1, p1) <- search' n env a
+  (su2, ts2, p2) <- search' n env b
   sp <- getSpine
-  return (min d1 d2, DList.append ts1 ts2, sp (mkConj p1 p2))
-search' n m (POr phi a b) = aux ILeft a <|> aux IRight b
+  return (IntSet.union su1 su2, DList.append ts1 ts2, sp (mkConj p1 p2))
+search' n env (POr phi a b) = aux ILeft a <|> aux IRight b
   where
     aux idx c = do
-      (d, ts, p) <- search' n m c
-      return (d, ts, mkInj idx phi p)
-search' n m (PExists s phi a) = do
-  evar <- getFreeVar
-  let v = UVar evar
-  (d, ts, p) <- search' n m (subst [(s,v)] a)
-  return (d, DList.cons v ts, mkExIntro s phi v p)
+      (su, ts, p) <- search' n env c
+      return (su, ts, mkInj idx (subst env phi) p)
+search' n env (PExists _ phi a) = do
+  v <- nextEVar
+  (su, ts, p) <- search' n (v:env) a
+  return (su, DList.cons v ts, mkExIntro (subst env phi) v p)
 
-intros' :: Proof p => Int -> SymbolMap Int -> PFormula ->
-  ProofMonad p (Int, DList Term, p)
-intros' n m a = do
+intros' :: Proof p => Int -> [Term] -> PFormula ->
+  ProofMonad p (IntSet, DList Term, p)
+intros' n env a = do
   pushContext
-  r <- intros n m a
+  (su, ts, p) <- intros n env a
+  ctx <- getContext
+  mapM_ resolveTermEVars ts
+  sut <- checkParams ts
   popContext
-  return r
+  return (IntSet.difference
+              (IntSet.difference (IntSet.union su sut)
+                    (IntMap.keysSet (Search.elims ctx)))
+              (Search.params ctx)
+          , DList.empty, p)
 
-intros :: Proof p => Int -> SymbolMap Int -> PFormula ->
-  ProofMonad p (Int, DList Term, p)
-intros n m (PImpl (a, elims) b) = do
+intros :: Proof p => Int -> [Term] -> PFormula ->
+  ProofMonad p (IntSet, DList Term, p)
+intros n env (PImpl (a, elims) b) = do
   s <- nextSymbol
-  addElims s elims
-  updateSpine (\sp p -> sp (mkLam s a p))
-  intros n (SymbolMap.insert s n m) b
-intros n m (PForall s a) = do
-  s' <- nextSymbol
-  intros n (SymbolMap.insert s' n m) (subst [(s,tvar s')] a)
-intros n m x = do
+  addElims s (map (subst env) elims)
+  updateSpine (\sp p -> sp (mkLam s (subst env a) p))
+  intros n env b
+intros n env (PForall _ a) = do
+  s <- nextSymbol
+  addParam s
+  intros n (tfun s [] : env) a
+intros n env x = do
   pushGoal x
-  (d, ts, p) <- search' n m x
+  (su, ts, p) <- search' n env x
   popGoal
   sp <- getSpine
-  return (d, ts, sp p)
+  return (su, ts, sp p)
 
-applyElims :: Proof p => Symbol -> Int -> SymbolMap Int -> [Elim PFormula] ->
-  ProofMonad p (Int, DList Term, p)
-applyElims s n m es = do
-  (d, ts, ps) <- foldr (search_subgoal n m) (return (n, DList.empty, [])) es
-  return (min d (SymbolMap.findWithDefault d s m), ts, mkElim s ps)
+applyElims :: Proof p => Int -> [Term] -> Symbol -> [Elim PFormula] ->
+  ProofMonad p (IntSet, DList Term, p)
+applyElims n env s es = do
+  (sus, ts, ps) <- foldr (search_subgoal . subst env) (return ([], DList.empty, [])) es
+  return (IntSet.insert (sid s) (IntSet.unions sus), ts, mkElim s ps)
   where
-    search_subgoal n m (EApp x) a = do
-      (d, ts, p) <- search' n m x
-      (d', ts', ps) <- a
-      return (min d d', DList.append ts ts', (EApp p):ps)
-    search_subgoal _ _ (EAApp t) a = do
-      (d, ts, ps) <- a
-      return (d, DList.cons t ts, (EAApp t):ps)
-    search_subgoal _ _ (EProj i) a = do
-      (d, ts, ps) <- a
-      return (d, ts, (EProj i):ps)
+    search_subgoal (EApp x) a = do
+      (su, ts, p) <- search' n [] x
+      (sus, ts', ps) <- a
+      return (su : sus, DList.append ts ts', EApp p : ps)
+    search_subgoal (EAApp t) a = do
+      (sus, ts, ps) <- a
+      return (sus, DList.cons t ts, EAApp t : ps)
+    search_subgoal (EProj i) a = do
+      (sus, ts, ps) <- a
+      return (sus, ts, EProj i : ps)
 
-applyCElims :: Proof p => Int -> SymbolMap Int -> Symbol -> [CElim] ->
-  ProofMonad p (Int, DList Term, p)
-applyCElims n m s [Elims es] = do
-  applyElims s n m es
-applyCElims n m s (ECase es idx phi1 es1 phi2 es2 : ces) = do
-  (d, ts, p) <- applyElims s n m es
-  mapM_ resolveTermVars ts
-  dv <- minVarDepth m ts
-  let d' = min d dv
-  s' <- withSubgoal (n - d') (solveCaseSubgoal d p)
-  applyCElims n (SymbolMap.insert s' d' m) s' ces
+fixApplyElims :: Proof p => Int -> [Term] -> Int -> Symbol -> [Elim PFormula]
+  -> ProofMonad p ([Term], [Term], Int, p)
+fixApplyElims n env k s es = do
+  let (vars, env') = splitAt k env
+  let env0 = reverse vars
+  (su, ts, p) <- applyElims n env0 s es
+  mapM_ resolveTermEVars ts
+  sut <- checkParams ts
+  let su' = IntSet.union su sut
+  d <- getMaxDepth su'
+  return (env0, env', d, p)
+
+applyCElims :: Proof p => Int -> [Term] -> [Symbol] -> Symbol -> CElims ->
+  ProofMonad p (IntSet, DList Term, p)
+applyCElims n env _ s (Elims _ es) = do
+  applyElims n env s es
+applyCElims n env params s (ECase k es idx phi1 es1 phi2 es2 ces) = do
+  (env0, env', d, p) <- fixApplyElims n env k s es
+  s' <- withSubgoal d (solveCaseSubgoal env0 d p)
+  applyCElims n env' params s' (subst env0 ces)
   where
-    solveCaseSubgoal d p g = do
-      (_, _, pg) <- search' d m (PImpl (phi2, es2) g)
+    solveCaseSubgoal env0 d p g = do
+      (_, _, pg) <- search' d [] (PImpl (subst env0 phi2, map (subst env0) es2) g)
       s' <- nextSymbol
       updateSpine (\sp p' ->
         case idx of
-          ILeft -> sp (mkCase p (mkLam s' phi1 p') pg)
-          IRight -> sp (mkCase p pg (mkLam s' phi1 p')))
-      addElims s' es1
+          ILeft -> sp (mkCase p (mkLam s' (subst env0 phi1) p') pg)
+          IRight -> sp (mkCase p pg (mkLam s' (subst env0 phi1) p')))
+      addElims s' (map (subst env0) es1)
       return s'
-applyCElims n m s (EEx es sa a eas : ces) = do
-  (d, ts, p) <- applyElims s n m es
-  mapM_ resolveTermVars ts
-  dv <- minVarDepth m ts
-  let d' = min d dv
-  (sa', s') <- withSubgoal (n - d') (insertExElim p)
-  addElims s' (map (subst [(sa,tvar sa')]) eas)
-  applyCElims n (SymbolMap.insert s' d' (SymbolMap.insert sa' d' m)) s' ces
+applyCElims n env params s (EEx k es a eas ces) = do
+  (env0, env', d, p) <- fixApplyElims n env k s es
+  let sa = head params
+  let env0' = tvar (sid sa) : env0
+  s' <- withSubgoal d (insertExElim sa env0' p)
+  addElims s' (map (subst env0') eas)
+  applyCElims n (tail env') (tail params) s' (subst env0' ces)
   where
-    insertExElim p _ = do
-      sa' <- nextSymbol
-      let a' = subst [(sa,tvar sa')] a
+    insertExElim sa env0' p _ = do
       s' <- nextSymbol
-      updateSpine (\sp p' -> sp (mkExElim p (mkALam sa' (mkLam s' a' p'))))
-      return (sa', s')
-applyCElims _ _ _ _ = empty
+      updateSpine (\sp p' ->
+        sp (mkExElim p (mkALam sa (mkLam s' (subst env0' a) p'))))
+      addParam sa
+      return s'
 
-applyElim :: Proof p => Int -> SymbolMap Int -> Symbol -> Eliminator -> Atom ->
-  ProofMonad p (Int, DList Term, p)
-applyElim n m s e a = do
-  vs <- mapM (lift . getFreeVars) (snd a)
+createEVars :: CElims -> ProofMonad p ([Term], [Symbol])
+createEVars (Elims k _) = do
+  env <- replicateM k nextEVar
+  return (env, [])
+createEVars (ECase k _ _ _ _ _ _ ces) = do
+  env <- replicateM k nextEVar
+  (env', params) <- createEVars ces
+  return (env ++ env', params)
+createEVars (EEx k _ _ _ ces) = do
+  env <- replicateM k nextEVar
+  s <- nextSymbol
+  (env', params) <- createEVars ces
+  return (env ++ [tfun s []] ++ env', s : params)
+
+applyElim :: Proof p => Int -> Symbol -> Eliminator -> Atom ->
+  ProofMonad p (IntSet, DList Term, p)
+applyElim n s e a = do
+  vs <- mapM (lift . U.getFreeVars) (snd a)
+  -- this is not entirely correct because 'e' might also contain evars
   if null vs then once cont else cont
   where
     cont = do
-      env <- mapM (\s -> getFreeVar >>= \v -> return (s,UVar v)) (evars e)
-      let a' = second (map (csubst env)) (target e)
+      (env, params) <- createEVars (Formula.elims e)
+      let a' = second (map (subst (reverse env))) (target e)
       unifyAtoms a a'
-      let es = map (csubst env) (Formula.elims e)
-      applyCElims n m s es
+      applyCElims n env params s (Formula.elims e)
 
-search :: Proof p => Int -> Formula -> [p]
-search n a =
+search :: Proof p => Int -> Int -> Formula -> [p]
+search depthLimit maxSymId formula =
   observeAll $
   evalIntBindingT $
   evalStateT
-    (intros n SymbolMap.empty (compileFormula a) >>= applyTermBindings')
-    (initProofState (maxSymbol a + 1))
+    (intros depthLimit [] (compileFormula formula) >>= applyTermBindings')
+    (initProofState maxSymId)
   where
     applyTermBindings' (_, _, p) =
-      applyTermBindings (\t -> resolveTermVars t >> applyBindings t) p
+      applyTermBindings (\t -> resolveTermEVars t >> U.applyBindings t) p

@@ -5,27 +5,26 @@ import Data.Foldable
 import qualified TPTP
 import Formula
 
-parseTPTP :: FilePath -> IO Formula
+-- returns (formula, max function symbol id)
+parseTPTP :: FilePath -> IO (Formula, Int)
 parseTPTP file = do
     (phi, s) <- parse file
-    return phi
+    return (phi, TPTP.predsNum s)
     where
      parse = TPTP.parseFile $ TPTP.FormulaStruct {
           TPTP.tVar = \_ i -> tvar i
-        , TPTP.tFun = \_ i args -> tfun i args
-        , TPTP.tPred = \_ i args -> Atom (i, args)
-        , TPTP.tEqual = \x y -> Atom (0, [x, y])
-        , TPTP.tTrue = Impl (Atom (1, [])) (Atom (1, []))
-        , TPTP.tFalse = Atom (1, [])
-        , TPTP.tNeg = \x -> Impl x (Atom (1, []))
+        , TPTP.tFun = \s i args -> tfun (Symbol s i) args
+        , TPTP.tPred = \s i args -> Atom (Symbol s i, args)
+        , TPTP.tEqual = \x y -> Atom (Symbol "=" 0, [x, y])
+        , TPTP.tTrue = Impl (Atom (Symbol "False" 1, [])) (Atom (Symbol "False" 1, []))
+        , TPTP.tFalse = Atom (Symbol "False" 1, [])
+        , TPTP.tNeg = \x -> Impl x (Atom (Symbol "False" 1, []))
         , TPTP.tImpl = Impl
-        , TPTP.tAssume = \ts x -> case ts of
-                                    [] -> x
-                                    t:ts' -> foldr' Impl t ts'
+        , TPTP.tAssume = flip (foldr' Impl)
         , TPTP.tAnd = And
         , TPTP.tOr = Or
-        , TPTP.tAll = \ss x -> Forall 0 x
-        , TPTP.tEx = \ss x -> Exists 0 x
+        , TPTP.tAll = flip (foldr' Forall)
+        , TPTP.tEx = flip (foldr' Exists)
      }
 
 main :: IO ()
