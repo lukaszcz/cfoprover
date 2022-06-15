@@ -29,4 +29,7 @@ parseTPTP file = do
      }
 
 main :: IO ()
-main = putStrLn "CProver"
+main = do
+     s <- getLine
+     print (read s :: Formula)
+     main

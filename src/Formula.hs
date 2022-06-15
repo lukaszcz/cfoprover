@@ -2,10 +2,14 @@
 module Formula where
 
 import Data.Functor
+import Data.Char
 import Data.List as List
 import Data.List.Extras.Pair
+import Data.HashMap.Strict (HashMap)
+import qualified Data.HashMap.Strict as HashMap
 
 import Control.Monad
+import Control.Monad.State
 import Control.Unification
 import Control.Unification.IntVar
 
@@ -153,7 +157,7 @@ instance Eq Formula where
 showsTerm :: Term -> ShowS
 showsTerm (UVar v) = showString "?" . shows (getVarID v)
 showsTerm (UTerm (Var x)) = showString "_?v" . shows x
-showsTerm (UTerm (Fun s args)) = shows (sname s) . sargs
+showsTerm (UTerm (Fun s args)) = showString (sname s) . sargs
     where
         sargs =
             if null args then
@@ -180,7 +184,7 @@ showsFormula env p (And a b) = showParen (p > and_prec) $
     where
         and_prec = 6
 showsFormula env p (Or a b) = showParen (p > or_prec) $
-    showsFormula env (or_prec+1) a . showString " /\\ " .
+    showsFormula env (or_prec+1) a . showString " \\/ " .
     showsFormula env (or_prec+1) b
     where
         or_prec = 6
@@ -197,6 +201,138 @@ showsFormula env p (Exists s a) = showParen (p > exists_prec) $
 
 instance Show Formula where
     showsPrec = showsFormula []
+
+readError :: String -> String -> a
+readError msg s = error $ msg ++ ": " ++ take 10 s ++ " (...)"
+
+data ReadState = ReadState { rSyms :: HashMap String Int, rSymId :: Int }
+
+newSymbol :: String -> State ReadState Symbol
+newSymbol s = do
+    rs <- get
+    let id = rSymId rs
+    put rs{ rSyms = HashMap.insert s id (rSyms rs), rSymId = id + 1 }
+    return $ Symbol s id
+
+getSymbol :: String -> State ReadState Symbol
+getSymbol s = do
+    rs <- get
+    case HashMap.lookup s (rSyms rs) of
+        Just id -> return $ Symbol s id
+        Nothing -> newSymbol s
+
+skipWhitespace :: String -> String
+skipWhitespace (c:s) | isSpace c = skipWhitespace s
+skipWhitespace s = s
+
+readLexeme :: String -> Maybe (String, String)
+readLexeme s =
+    case skipWhitespace s of
+        '&':s' -> Just ("and", s')
+        '|':s' -> Just ("or", s')
+        '/':'\\':s' -> Just ("and", s')
+        '\\':'/':s' -> Just ("or", s')
+        '-':'>':s' -> Just ("->", s')
+        s'@(c:_) | isAlpha c -> Just $ readIdent s'
+        c:s' -> Just ([c],s')
+        _ -> Nothing
+    where
+        readIdent (c:s) | isAlphaNum c || c == '_' =
+            let (s1,s2) = readIdent s in
+            (c:s1,s2)
+        readIdent s = ("",s)
+
+readTerm :: String -> State ReadState (Term, String)
+readTerm s =
+    case readLexeme s of
+        Just (sf,s') -> do
+            sym <- getSymbol sf
+            (args, s'') <- readArgs readTerm s'
+            return (UTerm (Fun sym args), s'')
+        _ -> readError "expected a term" s
+
+readArgs :: (String -> State ReadState (a, String)) -> String -> State ReadState ([a], String)
+readArgs f s =
+    case readLexeme s of
+        Just ("(", s1) -> go s1
+        _ -> return ([], s)
+    where
+        go s0 = do
+            (t, s1) <- f s0
+            case readLexeme s1 of
+                Just (",", s2) -> do
+                    (ts, s3) <- go s2
+                    return (t:ts, s3)
+                Just (")", s2) -> return ([t], s2)
+                _ -> readError "expected ')'" s
+
+readAtom :: String -> State ReadState (Formula, String)
+readAtom s =
+    case readLexeme s of
+        Just ("(",s') -> do
+            (r,s'') <- readFormula s'
+            case readLexeme s'' of
+                Just (")",s3) -> return (r, s3)
+                _ -> readError "expected ')'" s''
+        Just ("false",s') -> return (fBottom, s')
+        Just (sf,s') -> do
+            sym <- getSymbol sf
+            (args, s'') <- readArgs readTerm s'
+            return (Atom (sym, args), s'')
+        _ -> readError "expected an atom" s
+
+readQuantifier :: String -> State ReadState (Formula, String)
+readQuantifier s =
+    case readLexeme s of
+        Just ("forall",s1) -> go Forall s1
+        Just ("exists",s1) -> go Exists s1
+        _ -> readAtom s
+    where
+        go q s1 =
+            case readLexeme s1 of
+                Just (x,s2) -> do
+                    sym <- newSymbol x
+                    case readLexeme s2 of
+                        Just (".",s3) -> do
+                            (r,s4) <- readFormula s3
+                            return (q x (abstract sym r), s4)
+                        _ -> do
+                            (r,s3) <- readQuantifier s2
+                            return (q x (abstract sym r), s3)
+                _ -> readError "expected variable name" s1
+
+readConjunction :: String -> State ReadState (Formula, String)
+readConjunction s = do
+    (a1, s1) <- readQuantifier s
+    case readLexeme s1 of
+        Just ("and",s2) -> do
+            (a2,s3) <- readConjunction s2
+            return (And a1 a2, s3)
+        _ -> return (a1, s1)
+
+readDisjunction :: String -> State ReadState (Formula, String)
+readDisjunction s = do
+    (a1, s1) <- readConjunction s
+    case readLexeme s1 of
+        Just ("or",s2) -> do
+            (a2,s3) <- readDisjunction s2
+            return (Or a1 a2, s3)
+        _ -> return (a1, s1)
+
+readImplication :: String -> State ReadState (Formula, String)
+readImplication s = do
+    (a1, s1) <- readDisjunction s
+    case readLexeme s1 of
+        Just ("->",s2) -> do
+            (a2,s3) <- readImplication s2
+            return (Impl a1 a2, s3)
+        _ -> return (a1, s1)
+
+readFormula :: String -> State ReadState (Formula, String)
+readFormula = readImplication
+
+instance Read Formula where
+    readsPrec _ s = [evalState (readFormula s) (ReadState HashMap.empty tMinSymbol)]
 
 {-------------------------------------------------------------------}
 {- proof terms -}
