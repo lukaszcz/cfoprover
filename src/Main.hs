@@ -1,7 +1,5 @@
 module Main where
 
-import Data.Foldable
-
 import qualified TPTP
 import Formula
 
@@ -21,11 +19,11 @@ parseTPTP file = do
         , TPTP.tFalse = fBottom
         , TPTP.tNeg = (`Impl` fBottom)
         , TPTP.tImpl = Impl
-        , TPTP.tAssume = flip (foldr' Impl)
+        , TPTP.tAssume = flip (foldr Impl)
         , TPTP.tAnd = And
         , TPTP.tOr = Or
-        , TPTP.tAll = flip (foldr' Forall)
-        , TPTP.tEx = flip (foldr' Exists)
+        , TPTP.tAll = flip (foldr Forall)
+        , TPTP.tEx = flip (foldr Exists)
      }
 
 main :: IO ()

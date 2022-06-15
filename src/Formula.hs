@@ -1,4 +1,4 @@
-{-# LANGUAGE DeriveTraversable, FlexibleInstances #-}
+{-# LANGUAGE DeriveTraversable, FlexibleInstances, UnicodeSyntax #-}
 module Formula where
 
 import Data.Functor
@@ -70,7 +70,7 @@ mapAtoms :: (Int -> [String] -> Atom -> Atom) -> Formula -> Formula
 mapAtoms f = mapAtoms' f 0 []
 
 {----------------------------------------------------------------------------}
-{- Standard symbols -}
+{- standard symbols & formulas -}
 
 sBottom :: Symbol
 sBottom = Symbol "False" 0
@@ -164,7 +164,7 @@ showsTerm (UTerm (Fun s args)) = showString (sname s) . sargs
                 id
             else
                 showChar '(' .
-                foldl (\a x -> a . showString ", " . showsTerm x) (showsTerm (head args)) (tail args) .
+                foldl (\a x -> a . showString "," . showsTerm x) (showsTerm (head args)) (tail args) .
                 showChar ')'
 
 showTerm :: Term -> String
@@ -174,30 +174,23 @@ showsFormula :: [String] -> Int -> Formula -> ShowS
 showsFormula env _ (Atom (s, args)) =
     showsTerm (UTerm (Fun s (map (subst (map (\x -> tfun (Symbol x 0) []) env)) args)))
 showsFormula env p (Impl a b) = showParen (p > impl_prec) $
-    showsFormula env (impl_prec+1) a . showString " -> " .
+    showsFormula env (impl_prec+1) a . showString " → " .
     showsFormula env impl_prec b
-    where
-        impl_prec = 5
+    where impl_prec = 5
 showsFormula env p (And a b) = showParen (p > and_prec) $
-    showsFormula env (and_prec+1) a . showString " /\\ " .
+    showsFormula env (and_prec+1) a . showString " ∧ " .
     showsFormula env (and_prec+1) b
-    where
-        and_prec = 6
+    where and_prec = 6
 showsFormula env p (Or a b) = showParen (p > or_prec) $
-    showsFormula env (or_prec+1) a . showString " \\/ " .
+    showsFormula env (or_prec+1) a . showString " ∨ " .
     showsFormula env (or_prec+1) b
-    where
-        or_prec = 6
+    where or_prec = 6
 showsFormula env p (Forall s a) = showParen (p > forall_prec) $
-    showString "forall " . showString s . showChar ' ' .
-    showsFormula (s:env) forall_prec a
-    where
-        forall_prec = 7
+    showString "∀" . showString s . showsFormula (s:env) forall_prec a
+    where forall_prec = 7
 showsFormula env p (Exists s a) = showParen (p > exists_prec) $
-    showString "exists " . showString s . showChar ' ' .
-    showsFormula (s:env) exists_prec a
-    where
-        exists_prec = 7
+    showString "∃" . showString s . showsFormula (s:env) exists_prec a
+    where exists_prec = 7
 
 instance Show Formula where
     showsPrec = showsFormula []
@@ -233,6 +226,11 @@ readLexeme s =
         '/':'\\':s' -> Just ("and", s')
         '\\':'/':s' -> Just ("or", s')
         '-':'>':s' -> Just ("->", s')
+        '∧':s' -> Just ("and", s')
+        '∨':s' -> Just ("or", s')
+        '→':s' -> Just ("->", s')
+        '∀':s' -> Just ("forall", s')
+        '∃':s' -> Just ("exists", s')
         s'@(c:_) | isAlpha c -> Just $ readIdent s'
         c:s' -> Just ([c],s')
         _ -> Nothing
@@ -264,7 +262,7 @@ readArgs f s =
                     (ts, s3) <- go s2
                     return (t:ts, s3)
                 Just (")", s2) -> return ([t], s2)
-                _ -> readError "expected ')'" s
+                _ -> readError "expected ')'" s0
 
 readAtom :: String -> State ReadState (Formula, String)
 readAtom s =
@@ -438,6 +436,49 @@ instance Proof PTerm where
     mkExIntro = ExIntro
     mkExElim = ExElim
     applyTermBindings = mapTerms
+
+instance Show PTerm where
+    showsPrec _ (PVar s) = showString (sname s)
+    showsPrec d (Lambda s phi p) = showParen (d > lambda_prec) $
+        showString "λ" . showString (sname s) . showString " : " . shows phi .
+        showString " . " . showsPrec lambda_prec p
+        where lambda_prec = 0
+    showsPrec d (App p1 p2) = showParen (d > app_prec) $
+        showsPrec app_prec p1 . showString " " . showsPrec (app_prec + 1) p2
+        where app_prec = 5
+    showsPrec _ (Conj p1 p2) =
+        showString "(" . showsPrec app_prec p1 . showString ", " .
+        showsPrec app_prec p2 . showString ")"
+        where app_prec = 5
+    showsPrec d (Proj idx p) = showParen (d > app_prec) $
+        showString (case idx of ILeft -> "π1 "; IRight -> "π2 ") .
+        showsPrec (app_prec + 1) p
+        where app_prec = 5
+    showsPrec d (Inj idx _ p) = showParen (d > app_prec) $
+        showString (case idx of ILeft -> "in1 "; IRight -> "in2 ") .
+        showsPrec (app_prec + 1) p
+        where app_prec = 5
+    showsPrec d (Case p p1 p2) = showParen (d > lambda_prec) $
+        showString "case " . showsPrec app_prec p . showString " of " .
+        showsPrec lambda_prec p1 . showString " | " . showsPrec lambda_prec p2
+        where app_prec = 5
+              lambda_prec = 0
+    showsPrec d (ALambda s p) = showParen (d > lambda_prec) $
+        showString "Λ" . showString (sname s) .
+        showString " . " . showsPrec lambda_prec p
+        where lambda_prec = 0
+    showsPrec d (AApp p t) = showParen (d > app_prec) $
+        showsPrec app_prec p . showString " " . showsTerm t
+        where app_prec = 5
+    showsPrec _ (ExIntro _ t p) =
+        showString "[" . showsTerm t . showString ", " .
+        showsPrec lambda_prec p . showString "]"
+        where lambda_prec = 0
+    showsPrec d (ExElim p1 p2) = showParen (d > lambda_prec) $
+        showString "let " . showsPrec app_prec p1 . showString " be " .
+        showsPrec lambda_prec p2
+        where app_prec = 5
+              lambda_prec = 0
 
 {------------------------------------}
 {- Proof checking -}
