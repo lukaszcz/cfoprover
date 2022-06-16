@@ -19,6 +19,8 @@ executable cprover
   -- other-extensions:
   ghc-options:         -W -Werror -Wno-unused-top-binds -O2
   build-depends:       base >=4.12,
+                       optparse-simple,
+                       timeit,
                        list-extras,
                        unification-fd,
                        logict,

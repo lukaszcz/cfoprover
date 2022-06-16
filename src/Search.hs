@@ -48,16 +48,18 @@ data ProofState p = ProofState {
     , contextDepth :: Int
     -- contextDepth = length contexts - 1
     , freeSymbolId :: Int
+    , signature :: Signature
     }
 
-initProofState :: Int -> ProofState p
-initProofState n = ProofState {
+initProofState :: Signature -> ProofState p
+initProofState sig = ProofState {
     contexts = [emptyContext]
   , goals = []
   , spines = [emptySpine]
   , depthMaps = [IntMap.empty]
   , contextDepth = 0
-  , freeSymbolId = n
+  , freeSymbolId = maxSymbolId sig + 1
+  , signature = sig
   }
 
 type ProofMonad p = StateT (ProofState p) (IntBindingT TermF Logic)
@@ -192,25 +194,43 @@ withSubgoal d f = do
           , contextDepth = contextDepth ps }
   return a
 
-nextSymbol :: ProofMonad p Symbol
-nextSymbol = do
+nextSymbolNamed :: String -> ProofMonad p Symbol
+nextSymbolNamed s = do
   ps <- get
   let id = freeSymbolId ps
   put ps{ freeSymbolId = id + 1 }
-  return $ Symbol "" id
+  return $ Symbol s id
+
+nextSymbol :: ProofMonad p Symbol
+nextSymbol = nextSymbolNamed ""
 
 unifyAtoms :: Atom -> Atom -> ProofMonad p ()
 unifyAtoms (s1, _) (s2, _) | s1 /= s2 = empty
 unifyAtoms (_, args1) (_, args2) = zipWithM_ U.unify args1 args2
 
-generateTerm :: ProofMonad p Term
-generateTerm = return $ tfun (Symbol "DUM" 0) []
+generateTerm :: Int -> ProofMonad p Term
+generateTerm n = do
+  ctx <- getContext
+  IntSet.foldl' (\a c -> return (tfun (Symbol ("_X" ++ show c) c) []) <|> a) cont (params ctx)
+  where
+    cont =
+      if n == 0 then
+        empty
+      else do
+        ps <- get
+        let sig = signature ps
+        foldl' (build sig) empty (symbols sig)
+        where
+          build sig a s = do
+            let k = fromJust $ IntMap.lookup (sid s) (symbolArity sig)
+            args <- replicateM k (generateTerm (n - 1))
+            return (tfun s args) <|> a
 
-resolveEVars :: [IntVar] -> ProofMonad p ()
-resolveEVars = mapM_ (\v -> generateTerm >>= \t -> lift $ U.bindVar v t)
+resolveEVars :: Int -> [IntVar] -> ProofMonad p ()
+resolveEVars n = mapM_ (\v -> generateTerm n >>= \t -> lift $ U.bindVar v t)
 
-resolveTermEVars :: Term -> ProofMonad p ()
-resolveTermEVars t = lift (U.getFreeVars t) >>= resolveEVars
+resolveTermEVars :: Int -> Term -> ProofMonad p ()
+resolveTermEVars n t = lift (U.getFreeVars t) >>= resolveEVars n
 
 getMaxDepth :: IntSet -> ProofMonad p Int
 getMaxDepth su = do
@@ -270,7 +290,7 @@ intros' n env a = do
   pushContext
   (su, ts, p) <- intros n env a
   ctx <- getContext
-  mapM_ resolveTermEVars ts
+  mapM_ (resolveTermEVars n) ts
   sut <- checkParams ts
   popContext
   return (IntSet.difference
@@ -286,9 +306,10 @@ intros n env (PImpl (a, elims) b) = do
   addElims s (map (subst env) elims)
   updateSpine (\sp p -> sp (mkLam s (subst env a) p))
   intros n env b
-intros n env (PForall _ a) = do
-  s <- nextSymbol
+intros n env (PForall name a) = do
+  s <- nextSymbolNamed name
   addParam s
+  updateSpine (\sp p -> sp (mkALam s p))
   intros n (tfun s [] : env) a
 intros n env x = do
   pushGoal x
@@ -333,7 +354,7 @@ fixApplyElims n env k s es = do
   let (vars, env') = splitAt k env
   let env0 = reverse vars
   (su, ts, p) <- applyElims n env0 s es
-  mapM_ resolveTermEVars ts
+  mapM_ (resolveTermEVars n) ts
   sut <- checkParams ts
   let su' = IntSet.union su sut
   d <- getMaxDepth su'
@@ -399,13 +420,13 @@ applyElim n s e a = do
       unifyAtoms a a'
       applyCElims n env params s (Formula.elims e)
 
-search :: Proof p => Int -> Int -> Formula -> [p]
-search depthLimit maxSymId formula =
+search :: Proof p => Signature -> Int -> Formula -> [p]
+search sig depthLimit formula =
   observeAll $
   evalIntBindingT $
   evalStateT
     (intros depthLimit [] (compileFormula formula) >>= applyTermBindings')
-    (initProofState maxSymId)
+    (initProofState sig)
   where
     applyTermBindings' (_, _, p) =
-      applyTermBindings (\t -> resolveTermEVars t >> U.applyBindings t) p
+      applyTermBindings (\t -> resolveTermEVars depthLimit t >> U.applyBindings t) p
