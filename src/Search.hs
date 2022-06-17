@@ -1,5 +1,5 @@
 {-# LANGUAGE MultiParamTypeClasses, FlexibleInstances #-}
-module Search where
+module Search(search) where
 
 import Control.Monad.State
 import Control.Monad.Logic
@@ -21,17 +21,164 @@ import GHC.Base (maxInt)
 
 import Formula
 
+{------------------------------------}
+{- optimized formula representation -}
+
+data CElims
+  = Elims Int [Elim PFormula]
+  | ECase Int [Elim PFormula] Idx Formula [Eliminator] Formula [Eliminator] CElims
+  | EEx String Int [Elim PFormula] Formula [Eliminator] CElims
+
+data Eliminator = Eliminator
+  { target :: Atom,
+    elims :: CElims,
+    bindersNum :: Int,
+    cost :: Int
+  }
+
+data PFormula
+  = PAtom Atom
+  | PImpl (Formula, [Eliminator]) PFormula
+  | PAnd PFormula PFormula
+  | POr Formula PFormula PFormula
+  | PForall String PFormula
+  | PExists String Formula PFormula
+
+instance Substitutable CElims where
+  nsubst n env (Elims k es) = Elims k (map (nsubst n env) es)
+  nsubst n env (ECase k es i a eas b ebs cs) =
+    ECase
+      k
+      (map (nsubst n env) es)
+      i
+      (nsubst (n + k) env a)
+      (map (nsubst (n + k) env) eas)
+      (nsubst (n + k) env b)
+      (map (nsubst (n + k) env) ebs)
+      (nsubst (n + k) env cs)
+  nsubst n env (EEx s k es a eas cs) =
+    EEx
+      s
+      k
+      (map (nsubst n env) es)
+      (nsubst (n + k + 1) env a)
+      (map (nsubst (n + k + 1) env) eas)
+      (nsubst (n + k + 1) env cs)
+
+instance Substitutable Eliminator where
+  nsubst n env e =
+    e
+      { target = nsubst n env (target e),
+        elims = nsubst n env (elims e)
+      }
+
+instance Substitutable PFormula where
+  nsubst n env (PAtom a) = PAtom $ nsubst n env a
+  nsubst n env (PImpl (phi, elims) a) =
+    PImpl (nsubst n env phi, map (nsubst n env) elims) (nsubst n env a)
+  nsubst n env (PAnd a b) = PAnd (nsubst n env a) (nsubst n env b)
+  nsubst n env (POr phi a b) = POr (nsubst n env phi) (nsubst n env a) (nsubst n env b)
+  nsubst n env (PForall s a) = PForall s (nsubst (n + 1) env a)
+  nsubst n env (PExists s phi a) = PExists s (nsubst n env phi) (nsubst (n + 1) env a)
+
+shift :: Substitutable t => Int -> t -> t
+shift 0 = id
+shift k = subst (map (\n -> tvar (n + k)) [0, 1 ..])
+
+prependElim :: Elim PFormula -> CElims -> CElims
+prependElim e (Elims k es) = Elims k (shift k e : es)
+prependElim e (ECase k es idx a1 es1 a2 es2 elims) = ECase k (shift k e : es) idx a1 es1 a2 es2 elims
+prependElim e (EEx s k es a eas elims) = EEx s k (shift k e : es) a eas elims
+
+prependForallElim :: CElims -> CElims
+prependForallElim (Elims k es) = Elims (k + 1) (EAApp (tvar 0) : es)
+prependForallElim (ECase k es idx a1 es1 a2 es2 elims) = ECase (k + 1) (EAApp (tvar 0) : es) idx a1 es1 a2 es2 elims
+prependForallElim (EEx s k es a eas elims) = EEx s (k + 1) (EAApp (tvar 0) : es) a eas elims
+
+compileFormula :: Formula -> PFormula
+compileFormula (Atom a) = PAtom a
+compileFormula (Impl a b) = PImpl (a, compileElims a) (compileFormula b)
+compileFormula (And a b) = PAnd (compileFormula a) (compileFormula b)
+compileFormula phi@(Or a b) = POr phi (compileFormula a) (compileFormula b)
+compileFormula (Forall s a) = PForall s (compileFormula a)
+compileFormula (Exists s a) = PExists s a (compileFormula a)
+
+compileElims :: Formula -> [Eliminator]
+compileElims (Atom a) = [Eliminator {target = a, elims = Elims 0 [], bindersNum = 0, cost = 0}]
+compileElims (Impl a b) =
+  map
+    ( \e ->
+        e
+          { elims = prependElim (EApp (compileFormula a)) (elims e),
+            cost = cost e + 10
+          }
+    )
+    (compileElims b)
+compileElims (And a b) =
+  map (\e -> e {elims = prependElim (EProj ILeft) (elims e)}) (compileElims a)
+    ++ map (\e -> e {elims = prependElim (EProj IRight) (elims e)}) (compileElims b)
+compileElims (Or a b) =
+  map
+    ( \e ->
+        e
+          { elims = ECase 0 [] ILeft a eas b ebs (elims e),
+            cost = cost e + 10
+          }
+    )
+    eas
+    ++ map
+      ( \e ->
+          e
+            { elims = ECase 0 [] IRight b ebs a eas (elims e),
+              cost = cost e + 10
+            }
+      )
+      ebs
+  where
+    eas = compileElims a
+    ebs = compileElims b
+compileElims (Forall _ a) =
+  map
+    ( \e ->
+        e
+          { elims = prependForallElim (elims e),
+            bindersNum = bindersNum e + 1,
+            cost =
+              cost e
+                + if any (varOccurs (bindersNum e)) (snd (target e)) then 1 else 5
+          }
+    )
+    (compileElims a)
+compileElims (Exists s a) =
+  map (\e -> e {elims = EEx s 0 [] a eas (elims e), bindersNum = bindersNum e + 1}) eas
+  where
+    eas = compileElims a
+
+decompileFormula :: PFormula -> Formula
+decompileFormula (PAtom a) = Atom a
+decompileFormula (PImpl (phi, _) a) = Impl phi (decompileFormula a)
+decompileFormula (PAnd a b) = And (decompileFormula a) (decompileFormula b)
+decompileFormula (POr a _ _) = a
+decompileFormula (PForall s a) = Forall s (decompileFormula a)
+decompileFormula (PExists _ a _) = a
+
+instance Show PFormula where
+  showsPrec d x = showsPrec d (decompileFormula x)
+
+{--------------------------------------------------------------------------------}
+{- proof monad -}
+
 data Context = Context {
       -- 'elims' maps target head symbol ids to:
       -- (context variable symbol, depth of variable, eliminator)
-      elims :: IntMap [(Symbol,Eliminator)]
+      cElims :: IntMap [(Symbol,Eliminator)]
       -- 'params' contains symbol ids of the parameters in the context
-    , params :: IntSet
+    , cParams :: IntSet
       -- invariant: eliminators in a context contain no free term variables
     }
 
 emptyContext :: Context
-emptyContext = Context{Search.elims = IntMap.empty, Search.params = IntSet.empty}
+emptyContext = Context{cElims = IntMap.empty, cParams = IntSet.empty}
 
 type Spine p = p -> p
 {- given a proof for the spine hole, returns a complete proof term -}
@@ -77,7 +224,7 @@ nextEVar = U.UVar <$> lift U.freeVar
 
 lookup :: Symbol -> Context -> [(Symbol,Eliminator)]
 lookup s ctx =
-    fromMaybe [] (IntMap.lookup (sid s) (Search.elims ctx))
+    fromMaybe [] (IntMap.lookup (sid s) (cElims ctx))
 
 getContexts :: ProofMonad p [Context]
 getContexts = get <&> contexts
@@ -118,10 +265,10 @@ findElims :: Atom -> ProofMonad p [(Symbol,Eliminator)]
 findElims a = getContexts <&> findElims' a
 
 addElims' :: Symbol -> [Eliminator] -> Context -> Context
-addElims' s es ctx = ctx{Search.elims = elims'}
+addElims' s es ctx = ctx{cElims = elims'}
   where
     elims' = foldr (\e -> IntMap.insertWith (++) (sid $ fst (target e)) [(s,e)])
-                    (Search.elims ctx)
+                    (cElims ctx)
                     es
 
 addElims :: Symbol -> [Eliminator] -> ProofMonad p ()
@@ -133,7 +280,7 @@ addElims s elims = do
           IntMap.insert (sid s) (contextDepth ps) (head (depthMaps ps)) : tail (depthMaps ps) }
 
 addParam' :: Symbol -> Context -> Context
-addParam' s ctx = ctx{ Search.params = IntSet.insert (sid s) (Search.params ctx) }
+addParam' s ctx = ctx{ cParams = IntSet.insert (sid s) (cParams ctx) }
 
 addParam :: Symbol -> ProofMonad p ()
 addParam s = do
@@ -205,6 +352,9 @@ nextSymbolNamed s = do
 nextSymbol :: ProofMonad p Symbol
 nextSymbol = nextSymbolNamed ""
 
+{--------------------------------------------------------------------------------}
+{- terms & parameters -}
+
 unifyAtoms :: Atom -> Atom -> ProofMonad p ()
 unifyAtoms (s1, _) (s2, _) | s1 /= s2 = empty
 unifyAtoms (_, args1) (_, args2) = zipWithM_ U.unify args1 args2
@@ -212,10 +362,10 @@ unifyAtoms (_, args1) (_, args2) = zipWithM_ U.unify args1 args2
 generateTerm :: Int -> ProofMonad p Term
 generateTerm n = do
   ctx <- getContext
-  if IntSet.null (params ctx) then
+  if IntSet.null (cParams ctx) then
     return (tfun (Symbol "_c" (maxInt - 1)) []) <|> cont
   else
-    IntSet.foldl' (\a c -> return (tfun (Symbol ("_c" ++ show c) c) []) <|> a) cont (params ctx)
+    IntSet.foldl' (\a c -> return (tfun (Symbol ("_c" ++ show c) c) []) <|> a) cont (cParams ctx)
   where
     cont =
       if n == 0 then
@@ -230,34 +380,31 @@ generateTerm n = do
             args <- replicateM k (generateTerm (n - 1))
             return (tfun s args) <|> a
 
-resolveEVars :: Int -> [IntVar] -> ProofMonad p ()
-resolveEVars n = mapM_ (\v -> generateTerm n >>= \t -> lift $ U.bindVar v t)
-
 resolveTermEVars :: Int -> Term -> ProofMonad p ()
 resolveTermEVars n t = lift (U.getFreeVars t) >>= resolveEVars n
-
-getMaxDepth :: IntSet -> ProofMonad p Int
-getMaxDepth su = do
-  mp <- getDepthMap
-  return $ IntSet.foldl' (\a x -> max a (fromJust $ IntMap.lookup x mp)) 0 su
-
-checkParamsInTerm :: IntSet -> Term -> ProofMonad p IntSet
-checkParamsInTerm su (U.UTerm (Fun s args)) = do
-  ps <- get
-  let d = contextDepth ps
-  let mp = head (depthMaps ps)
-  if fromMaybe maxInt (IntMap.lookup (sid s) mp) > d then
-    empty
-  else
-    foldl' (\a x -> a >>= \su -> checkParamsInTerm su x)
-          (return $ IntSet.insert (sid s) su)
-          args
-checkParamsInTerm _ _ = error "checkParamsInTerm"
+  where
+    resolveEVars n = mapM_ (\v -> generateTerm n >>= \t -> lift $ U.bindVar v t)
 
 checkParams :: Traversable t => t Term -> ProofMonad p IntSet
 checkParams ts = do
   ts' <- U.applyBindingsAll ts
   foldl' (\a x -> a >>= \su -> checkParamsInTerm su x) (return IntSet.empty) ts'
+  where
+    checkParamsInTerm :: IntSet -> Term -> ProofMonad p IntSet
+    checkParamsInTerm su (U.UTerm (Fun s args)) = do
+      ps <- get
+      let d = contextDepth ps
+      let mp = head (depthMaps ps)
+      if fromMaybe maxInt (IntMap.lookup (sid s) mp) > d then
+        empty
+      else
+        foldl' (\a x -> a >>= \su -> checkParamsInTerm su x)
+              (return $ IntSet.insert (sid s) su)
+              args
+    checkParamsInTerm _ _ = error "checkParamsInTerm"
+
+{--------------------------------------------------------------------------------}
+{- search -}
 
 {- search limit (argument to search') should not be confused with context depth -}
 {- search' limit env formula = (symbolsUsed, terms (evars), proof) -}
@@ -294,8 +441,8 @@ intros n env a = do
   popContext
   return (IntSet.difference
               (IntSet.difference (IntSet.union su sut)
-                    (IntMap.keysSet (Search.elims ctx)))
-              (Search.params ctx)
+                    (IntMap.keysSet (cElims ctx)))
+              (cParams ctx)
           , DList.empty, p)
 
 intros' :: Proof p => Int -> [Term] -> PFormula ->
@@ -372,6 +519,10 @@ fixApplyElims n env k s es = do
   let su' = IntSet.union su sut
   d <- getMaxDepth su'
   return (env0, env', d, p)
+  where
+    getMaxDepth su = do
+      mp <- getDepthMap
+      return $ IntSet.foldl' (\a x -> max a (fromJust $ IntMap.lookup x mp)) 0 su
 
 applyCElims :: Proof p => Int -> [Term] -> [Symbol] -> Symbol -> CElims ->
   ProofMonad p (IntSet, DList Term, p)
@@ -428,10 +579,10 @@ applyElim n s e a = do
   if null vs then once cont else cont
   where
     cont = do
-      (env, params) <- createEVars (Formula.elims e)
+      (env, params) <- createEVars (elims e)
       let a' = second (map (subst (reverse env))) (target e)
       unifyAtoms a a'
-      applyCElims n env params s (Formula.elims e)
+      applyCElims n env params s (elims e)
 
 search :: Proof p => Signature -> Int -> Formula -> [p]
 search sig depthLimit formula =
