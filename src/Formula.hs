@@ -411,7 +411,7 @@ instance Substitutable a => Substitutable (Elim a) where
   nsubst n env (EAApp t) = EAApp (nsubst n env t)
   nsubst _ _ e@(EProj _) = e
 
-class Proof p where
+class Show p => Proof p where
   mkVar :: Symbol -> p
   mkLam :: Symbol -> Formula -> p -> p
   mkApp :: p -> p -> p

@@ -418,8 +418,7 @@ search' n env a@(PForall _ _) = intros n env a
 search' n env (PAnd a b) = do
   (su1, ts1, p1) <- search' n env a
   (su2, ts2, p2) <- search' n env b
-  sp <- getSpine
-  return (IntSet.union su1 su2, DList.append ts1 ts2, sp (mkConj p1 p2))
+  return (IntSet.union su1 su2, DList.append ts1 ts2, mkConj p1 p2)
 search' n env (POr phi a b) = aux ILeft a <|> aux IRight b
   where
     aux idx c = do
