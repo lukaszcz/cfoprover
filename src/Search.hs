@@ -46,17 +46,17 @@ data ProofState p = ProofState {
     , depthMaps :: [IntMap Int]
     -- depthMaps: maps symbols to depths at which they were introduced
     , contextDepth :: Int
-    -- contextDepth = length contexts - 1
+    -- contextDepth = length contexts
     , freeSymbolId :: Int
     , signature :: Signature
     }
 
 initProofState :: Signature -> ProofState p
 initProofState sig = ProofState {
-    contexts = [emptyContext]
+    contexts = []
   , goals = []
-  , spines = [emptySpine]
-  , depthMaps = [IntMap.empty]
+  , spines = []
+  , depthMaps = []
   , contextDepth = 0
   , freeSymbolId = maxSymbolId sig + 1
   , signature = sig
@@ -148,7 +148,8 @@ pushContext = do
   ps <- get
   put ps{ contexts = emptyContext : contexts ps
         , spines = emptySpine : spines ps
-        , depthMaps = head (depthMaps ps) : depthMaps ps
+        , depthMaps =
+          if null (depthMaps ps) then [IntMap.empty] else head (depthMaps ps) : depthMaps ps
         , contextDepth = contextDepth ps + 1 }
 
 popContext :: ProofMonad p ()
@@ -211,7 +212,10 @@ unifyAtoms (_, args1) (_, args2) = zipWithM_ U.unify args1 args2
 generateTerm :: Int -> ProofMonad p Term
 generateTerm n = do
   ctx <- getContext
-  IntSet.foldl' (\a c -> return (tfun (Symbol ("_X" ++ show c) c) []) <|> a) cont (params ctx)
+  if IntSet.null (params ctx) then
+    return (tfun (Symbol "_c" (maxInt - 1)) []) <|> cont
+  else
+    IntSet.foldl' (\a c -> return (tfun (Symbol ("_c" ++ show c) c) []) <|> a) cont (params ctx)
   where
     cont =
       if n == 0 then
@@ -262,8 +266,8 @@ search' :: Proof p => Int -> [Term] -> PFormula ->
 search' 0 _ _ = empty
 search' _ _ (PAtom (s, _)) | s == sBottom = empty
 search' n env (PAtom a) = searchElim n env a
-search' n env a@(PImpl _ _) = intros' n env a
-search' n env a@(PForall _ _) = intros' n env a
+search' n env a@(PImpl _ _) = intros n env a
+search' n env a@(PForall _ _) = intros n env a
 search' n env (PAnd a b) = do
   (su1, ts1, p1) <- search' n env a
   (su2, ts2, p2) <- search' n env b
@@ -279,16 +283,11 @@ search' n env (PExists _ phi a) = do
   (su, ts, p) <- search' n (v:env) a
   return (su, DList.cons v ts, mkExIntro (subst env phi) v p)
 
-searchElim :: Proof p => Int -> [Term] -> Atom -> ProofMonad p (IntSet, DList Term, p)
-searchElim n env a = do
-  elims <- findElims a
-  foldr (\(s,e) acc -> applyElim (n - 1) s e (subst env a) <|> acc) empty elims
-
-intros' :: Proof p => Int -> [Term] -> PFormula ->
+intros :: Proof p => Int -> [Term] -> PFormula ->
   ProofMonad p (IntSet, DList Term, p)
-intros' n env a = do
+intros n env a = do
   pushContext
-  (su, ts, p) <- intros n env a
+  (su, ts, p) <- intros' n env a
   ctx <- getContext
   mapM_ (resolveTermEVars n) ts
   sut <- checkParams ts
@@ -299,37 +298,51 @@ intros' n env a = do
               (Search.params ctx)
           , DList.empty, p)
 
-intros :: Proof p => Int -> [Term] -> PFormula ->
+intros' :: Proof p => Int -> [Term] -> PFormula ->
   ProofMonad p (IntSet, DList Term, p)
-intros n env (PImpl (a, elims) b) = do
+intros' n env (PImpl (a, elims) b) = do
   s <- nextSymbol
   addElims s (map (subst env) elims)
   updateSpine (\sp p -> sp (mkLam s (subst env a) p))
-  intros n env b
-intros n env (PForall name a) = do
+  intros' n env b
+intros' n env (PForall name a) = do
   s <- nextSymbolNamed name
   addParam s
   updateSpine (\sp p -> sp (mkALam s p))
-  intros n (tfun s [] : env) a
-intros n env x = do
+  intros' n (tfun s [] : env) a
+intros' n env x = do
   pushGoal x
   (su, ts, p) <- searchAfterIntros n env x
   popGoal
   sp <- getSpine
   return (su, ts, sp p)
 
+searchElim :: Proof p => Int -> [Term] -> Atom -> ProofMonad p (IntSet, DList Term, p)
+searchElim n env a = do
+  elims <- findElims a
+  foldr (\(s,e) acc -> applyElim (n - 1) s e (subst env a) <|> acc) empty elims
+
+wrapExFalso :: Proof p => PFormula -> ProofMonad p (IntSet, DList Term, p) -> ProofMonad p (IntSet, DList Term, p)
+wrapExFalso a m = do
+  (su, ts, p) <- m
+  return (su, ts, mkExfalso (decompileFormula a) p)
+
+searchExFalso :: Proof p => Int -> [Term] -> PFormula -> ProofMonad p (IntSet, DList Term, p)
+searchExFalso n env a = wrapExFalso a $ searchElim n env aBottom
+
 searchAfterIntros :: Proof p => Int -> [Term] -> PFormula ->
   ProofMonad p (IntSet, DList Term, p)
 searchAfterIntros 0 _ _ = empty
-searchAfterIntros n env (PAtom a) = do
+searchAfterIntros n env (PAtom a) | a == aBottom = searchElim n env aBottom
+searchAfterIntros n env ga@(PAtom a) = do
   es1 <- findElims a
   es2 <- findElims aBottom
   foldr apElim empty (elims es1 es2)
   where
     elims es1 es2 = sortBy (\x y -> compare (cost (snd x)) (cost (snd y))) (es1 ++ es2)
-    apElim (s, e) acc | s == sBottom = applyElim (n - 1) s e aBottom <|> acc
+    apElim (s, e) acc | fst (target e) == sBottom = wrapExFalso ga $ applyElim (n - 1) s e aBottom <|> acc
     apElim (s, e) acc = applyElim (n - 1) s e (subst env a) <|> acc
-searchAfterIntros n env g = search' n env g <|> searchElim n env aBottom
+searchAfterIntros n env g = search' n env g <|> searchExFalso n env g
 
 applyElims :: Proof p => Int -> [Term] -> Symbol -> [Elim PFormula] ->
   ProofMonad p (IntSet, DList Term, p)
@@ -366,11 +379,11 @@ applyCElims n env _ s (Elims _ es) = do
   applyElims n env s es
 applyCElims n env params s (ECase k es idx phi1 es1 phi2 es2 ces) = do
   (env0, env', d, p) <- fixApplyElims n env k s es
-  s' <- withSubgoal d (solveCaseSubgoal env0 d p)
+  s' <- withSubgoal d (solveCaseSubgoal env0 p)
   applyCElims n env' params s' (subst env0 ces)
   where
-    solveCaseSubgoal env0 d p g = do
-      (_, _, pg) <- search' d [] (PImpl (subst env0 phi2, map (subst env0) es2) g)
+    solveCaseSubgoal env0 p g = do
+      (_, _, pg) <- search' n [] (PImpl (subst env0 phi2, map (subst env0) es2) g)
       s' <- nextSymbol
       updateSpine (\sp p' ->
         case idx of
@@ -378,10 +391,10 @@ applyCElims n env params s (ECase k es idx phi1 es1 phi2 es2 ces) = do
           IRight -> sp (mkCase p pg (mkLam s' (subst env0 phi1) p')))
       addElims s' (map (subst env0) es1)
       return s'
-applyCElims n env params s (EEx k es a eas ces) = do
+applyCElims n env params s (EEx _ k es a eas ces) = do
   (env0, env', d, p) <- fixApplyElims n env k s es
   let sa = head params
-  let env0' = tvar (sid sa) : env0
+  let env0' = tfun sa [] : env0
   s' <- withSubgoal d (insertExElim sa env0' p)
   addElims s' (map (subst env0') eas)
   applyCElims n (tail env') (tail params) s' (subst env0' ces)
@@ -401,9 +414,9 @@ createEVars (ECase k _ _ _ _ _ _ ces) = do
   env <- replicateM k nextEVar
   (env', params) <- createEVars ces
   return (env ++ env', params)
-createEVars (EEx k _ _ _ ces) = do
+createEVars (EEx str k _ _ _ ces) = do
   env <- replicateM k nextEVar
-  s <- nextSymbol
+  s <- nextSymbolNamed str
   (env', params) <- createEVars ces
   return (env ++ [tfun s []] ++ env', s : params)
 

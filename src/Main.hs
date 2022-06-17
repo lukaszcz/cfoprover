@@ -47,9 +47,9 @@ data Options = Options
 doSearch :: Options -> Formula -> IO ()
 doSearch opts phi = timeIt $ do
   if produceProof opts then
-    print (go 3 :: PTerm)
+    print (go 2 :: PTerm)
   else
-    (go 3 :: ()) `seq` putStrLn "success"
+    (go 2 :: ()) `seq` putStrLn "success"
   where
     sig = createSignature phi
     go n =

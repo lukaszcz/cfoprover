@@ -6,10 +6,10 @@ module Formula where
 
 import Control.Monad
 import Control.Monad.State
+import Control.Monad.Identity
 import Control.Unification
 import Control.Unification.IntVar
 import Data.Char
-import Data.Functor
 import Data.HashMap.Strict (HashMap)
 import qualified Data.HashMap.Strict as HashMap
 import Data.IntMap.Strict (IntMap)
@@ -63,16 +63,19 @@ data Formula
   | Forall String Formula
   | Exists String Formula
 
-mapAtoms' :: (Int -> [String] -> Atom -> Atom) -> Int -> [String] -> Formula -> Formula
-mapAtoms' f n env (Atom a) = Atom (f n env a)
-mapAtoms' f n env (Impl x y) = Impl (mapAtoms' f n env x) (mapAtoms' f n env y)
-mapAtoms' f n env (And x y) = And (mapAtoms' f n env x) (mapAtoms' f n env y)
-mapAtoms' f n env (Or x y) = Or (mapAtoms' f n env x) (mapAtoms' f n env y)
-mapAtoms' f n env (Forall s x) = Forall s (mapAtoms' f (n + 1) (s : env) x)
-mapAtoms' f n env (Exists s x) = Exists s (mapAtoms' f (n + 1) (s : env) x)
+mapAtoms' :: Applicative m => (Int -> [String] -> Atom -> m Atom) -> Int -> [String] -> Formula -> m Formula
+mapAtoms' f n env (Atom a) = Atom <$> f n env a
+mapAtoms' f n env (Impl x y) = Impl <$> mapAtoms' f n env x <*> mapAtoms' f n env y
+mapAtoms' f n env (And x y) = And <$> mapAtoms' f n env x <*> mapAtoms' f n env y
+mapAtoms' f n env (Or x y) = Or <$> mapAtoms' f n env x <*> mapAtoms' f n env y
+mapAtoms' f n env (Forall s x) = Forall s <$> mapAtoms' f (n + 1) (s : env) x
+mapAtoms' f n env (Exists s x) = Exists s <$> mapAtoms' f (n + 1) (s : env) x
+
+mapAtomsM :: Applicative m => (Int -> [String] -> Atom -> m Atom) -> Formula -> m Formula
+mapAtomsM f = mapAtoms' f 0 []
 
 mapAtoms :: (Int -> [String] -> Atom -> Atom) -> Formula -> Formula
-mapAtoms f = mapAtoms' f 0 []
+mapAtoms f a = runIdentity $ mapAtomsM (\n env x -> return (f n env x)) a
 
 data Signature = Signature
   { symbols :: [Symbol],
@@ -114,7 +117,7 @@ createSignature phi =
 {- standard symbols & formulas -}
 
 sBottom :: Symbol
-sBottom = Symbol "False" 0
+sBottom = Symbol "⊥" 0
 
 aBottom :: Atom
 aBottom = (sBottom, [])
@@ -123,7 +126,7 @@ fBottom :: Formula
 fBottom = Atom aBottom
 
 sTop :: Symbol
-sTop = Symbol "True" 1
+sTop = Symbol "⊤" 1
 
 aTop :: Atom
 aTop = (sTop, [])
@@ -217,6 +220,9 @@ showsTerm (UTerm (Fun s args)) = showsSymbol s . sargs
 showTerm :: Term -> String
 showTerm t = showsTerm t ""
 
+showAtom :: (Symbol, [Term]) -> String
+showAtom (s, args) = showTerm (UTerm (Fun s args))
+
 showsFormula :: [String] -> Int -> Formula -> ShowS
 showsFormula env _ (Atom (s, args)) =
   showsTerm (UTerm (Fun s (map (subst (map (\x -> tfun (Symbol x 0) []) env)) args)))
@@ -283,6 +289,8 @@ readLexeme s =
     '/' : '\\' : s' -> Just ("and", s')
     '\\' : '/' : s' -> Just ("or", s')
     '-' : '>' : s' -> Just ("->", s')
+    '⊥' : s' -> Just ("false", s')
+    '⊤' : s' -> Just ("true", s')
     '∧' : s' -> Just ("and", s')
     '∨' : s' -> Just ("or", s')
     '→' : s' -> Just ("->", s')
@@ -293,7 +301,7 @@ readLexeme s =
     _ -> Nothing
   where
     readIdent (c : s)
-      | isAlphaNum c || c == '_' =
+      | isAlphaNum c || c == '_' || c == '-' || c == '\'' =
         let (s1, s2) = readIdent s
          in (c : s1, s2)
     readIdent s = ("", s)
@@ -330,6 +338,7 @@ readAtom s =
       case readLexeme s'' of
         Just (")", s3) -> return (r, s3)
         _ -> readError "expected ')'" s''
+    Just ("true", s') -> return (fTop, s')
     Just ("false", s') -> return (fBottom, s')
     Just (sf, s') -> do
       sym <- getSymbol sf
@@ -414,6 +423,7 @@ class Proof p where
   mkAApp :: p -> Term -> p
   mkExIntro :: Formula -> Term -> p -> p
   mkExElim :: p -> p -> p
+  mkExfalso :: Formula -> p -> p
   mkElim :: Symbol -> [Elim p] -> p
   mkElim s elims = mk (mkVar s) elims
     where
@@ -435,6 +445,7 @@ instance Proof () where
   mkAApp _ _ = ()
   mkExIntro _ _ _ = ()
   mkExElim _ _ = ()
+  mkExfalso _ _ = ()
   mkElim _ _ = ()
   applyTermBindings _ _ = return ()
 
@@ -450,38 +461,21 @@ data PTerm
   | AApp PTerm Term
   | ExIntro Formula Term PTerm -- ExIntro a tt t :: a
   | ExElim PTerm PTerm
+  | Exfalso Formula PTerm
 
 mapTerms :: Monad m => (Term -> m Term) -> PTerm -> m PTerm
-mapTerms _ x@(PVar _) = return x
-mapTerms f (Lambda s phi x) = mapTerms f x <&> Lambda s phi
-mapTerms f (App x y) = do
-  x' <- mapTerms f x
-  y' <- mapTerms f y
-  return $ App x' y'
-mapTerms f (Conj x y) = do
-  x' <- mapTerms f x
-  y' <- mapTerms f y
-  return $ Conj x' y'
-mapTerms f (Proj idx x) = mapTerms f x <&> Proj idx
-mapTerms f (Inj idx phi x) = mapTerms f x <&> Inj idx phi
-mapTerms f (Case x y z) = do
-  x' <- mapTerms f x
-  y' <- mapTerms f y
-  z' <- mapTerms f z
-  return $ Case x' y' z'
-mapTerms f (ALambda s x) = mapTerms f x <&> ALambda s
-mapTerms f (AApp x t) = do
-  x' <- mapTerms f x
-  t' <- f t
-  return $ AApp x' t'
-mapTerms f (ExIntro phi t x) = do
-  x' <- mapTerms f x
-  t' <- f t
-  return $ ExIntro phi t' x'
-mapTerms f (ExElim x y) = do
-  x' <- mapTerms f x
-  y' <- mapTerms f y
-  return $ ExElim x' y'
+mapTerms _ x@(PVar _) = pure x
+mapTerms f (Lambda s phi x) = (Lambda s <$> mapAtomsM (\_ _ (s,args) -> mapM f args >>= \args' -> pure (s, args')) phi) <*> mapTerms f x
+mapTerms f (App x y) = App <$> mapTerms f x <*> mapTerms f y
+mapTerms f (Conj x y) = Conj <$> mapTerms f x <*> mapTerms f y
+mapTerms f (Proj idx x) = Proj idx <$> mapTerms f x
+mapTerms f (Inj idx phi x) = Inj idx phi <$> mapTerms f x
+mapTerms f (Case x y z) = Case <$> mapTerms f x <*> mapTerms f y <*> mapTerms f z
+mapTerms f (ALambda s x) = ALambda s <$> mapTerms f x
+mapTerms f (AApp x t) = AApp <$> mapTerms f x <*> f t
+mapTerms f (ExIntro phi t x) = ExIntro phi <$> f t <*> mapTerms f x
+mapTerms f (ExElim x y) = ExElim <$> mapTerms f x <*> mapTerms f y
+mapTerms f (Exfalso phi x) = Exfalso phi <$> mapTerms f x
 
 instance Proof PTerm where
   mkVar = PVar
@@ -495,6 +489,7 @@ instance Proof PTerm where
   mkAApp = AApp
   mkExIntro = ExIntro
   mkExElim = ExElim
+  mkExfalso = Exfalso
   applyTermBindings = mapTerms
 
 instance Show PTerm where
@@ -531,10 +526,11 @@ instance Show PTerm where
       app_prec = 5
   showsPrec d (Case p p1 p2) =
     showParen (d > lambda_prec) $
-      showString "case " . showsPrec app_prec p . showString " of "
+      showString "case " . showsPrec (app_prec + 1) p . showString " { "
         . showsPrec lambda_prec p1
         . showString " | "
         . showsPrec lambda_prec p2
+        . showString " }"
     where
       app_prec = 5
       lambda_prec = 0
@@ -563,6 +559,11 @@ instance Show PTerm where
     where
       app_prec = 5
       lambda_prec = 0
+  showsPrec d (Exfalso _ p) =
+    showParen (d > app_prec) $
+      showString "exfalso " . showsPrec (app_prec + 1) p
+    where
+      app_prec = 5
 
 {------------------------------------}
 {- proof checking -}
@@ -629,6 +630,9 @@ infer' env (ExElim t t') = do
         Forall _ (Impl b1 b2) | b1 == a' -> return b2
         _ -> Nothing
     _ -> Nothing
+infer' env (Exfalso phi t) = do
+  a <- infer' env t
+  if a == fBottom then Just phi else Nothing
 
 infer :: PTerm -> Maybe Formula
 infer = infer' []
@@ -644,7 +648,7 @@ check t a = case infer t of
 data CElims
   = Elims Int [Elim PFormula]
   | ECase Int [Elim PFormula] Idx Formula [Eliminator] Formula [Eliminator] CElims
-  | EEx Int [Elim PFormula] Formula [Eliminator] CElims
+  | EEx String Int [Elim PFormula] Formula [Eliminator] CElims
 
 data Eliminator = Eliminator
   { target :: Atom,
@@ -673,8 +677,9 @@ instance Substitutable CElims where
       (nsubst (n + k) env b)
       (map (nsubst (n + k) env) ebs)
       (nsubst (n + k) env cs)
-  nsubst n env (EEx k es a eas cs) =
+  nsubst n env (EEx s k es a eas cs) =
     EEx
+      s
       k
       (map (nsubst n env) es)
       (nsubst (n + k + 1) env a)
@@ -704,12 +709,12 @@ shift k = subst (map (\n -> tvar (n + k)) [0, 1 ..])
 prependElim :: Elim PFormula -> CElims -> CElims
 prependElim e (Elims k es) = Elims k (shift k e : es)
 prependElim e (ECase k es idx a1 es1 a2 es2 elims) = ECase k (shift k e : es) idx a1 es1 a2 es2 elims
-prependElim e (EEx k es a eas elims) = EEx k (shift k e : es) a eas elims
+prependElim e (EEx s k es a eas elims) = EEx s k (shift k e : es) a eas elims
 
 prependForallElim :: CElims -> CElims
 prependForallElim (Elims k es) = Elims (k + 1) (EAApp (tvar 0) : es)
 prependForallElim (ECase k es idx a1 es1 a2 es2 elims) = ECase (k + 1) (EAApp (tvar 0) : es) idx a1 es1 a2 es2 elims
-prependForallElim (EEx k es a eas elims) = EEx (k + 1) (EAApp (tvar 0) : es) a eas elims
+prependForallElim (EEx s k es a eas elims) = EEx s (k + 1) (EAApp (tvar 0) : es) a eas elims
 
 compileFormula :: Formula -> PFormula
 compileFormula (Atom a) = PAtom a
@@ -765,7 +770,18 @@ compileElims (Forall _ a) =
           }
     )
     (compileElims a)
-compileElims (Exists _ a) =
-  map (\e -> e {elims = EEx 0 [] a eas (elims e), bindersNum = bindersNum e + 1}) eas
+compileElims (Exists s a) =
+  map (\e -> e {elims = EEx s 0 [] a eas (elims e), bindersNum = bindersNum e + 1}) eas
   where
     eas = compileElims a
+
+decompileFormula :: PFormula -> Formula
+decompileFormula (PAtom a) = Atom a
+decompileFormula (PImpl (phi, _) a) = Impl phi (decompileFormula a)
+decompileFormula (PAnd a b) = And (decompileFormula a) (decompileFormula b)
+decompileFormula (POr a _ _) = a
+decompileFormula (PForall s a) = Forall s (decompileFormula a)
+decompileFormula (PExists _ a _) = a
+
+instance Show PFormula where
+  showsPrec d x = showsPrec d (decompileFormula x)
