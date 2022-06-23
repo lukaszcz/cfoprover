@@ -12,6 +12,8 @@ import Data.List
 import Data.Maybe
 import Data.Functor
 import Data.Bifunctor
+import Data.HashSet (HashSet)
+import qualified Data.HashSet as HashSet
 import Data.IntMap.Strict (IntMap)
 import qualified Data.IntMap.Strict as IntMap
 import Data.IntSet (IntSet)
@@ -191,6 +193,7 @@ data ProofState p = ProofState {
       contexts :: [Context]
     , goals :: [PFormula]
     , spines :: [Spine p]
+    , caseAtoms :: [HashSet (Symbol, Atom)]
     , depthMaps :: [IntMap Int]
     -- depthMaps: maps symbols to depths at which they were introduced
     , contextDepth :: Int
@@ -204,6 +207,7 @@ initProofState sig = ProofState {
     contexts = []
   , goals = []
   , spines = []
+  , caseAtoms = []
   , depthMaps = []
   , contextDepth = 0
   , freeSymbolId = maxSymbolId sig + 1
@@ -221,7 +225,7 @@ observeE lt =
     l -> Right $ foldr (:) [] l
 
 failE :: Monoid e => e -> ELogic e a
-failE e = LogicT $ \_ fk -> reader (\e' -> runReader fk (e <> e'))
+failE e = LogicT $ \_ fk -> reader (\e' -> runReader fk $! (e <> e'))
 
 instance Semigroup Bool where
   (<>) = (||)
@@ -274,9 +278,6 @@ updateSpine f = do
 getDepthMap :: ProofMonad p (IntMap Int)
 getDepthMap = get <&> head . depthMaps
 
-getDepth :: Int -> ProofMonad p Int
-getDepth id = getDepthMap <&> fromJust . IntMap.lookup id
-
 findElims' :: Atom -> [Context] -> [(Symbol,Eliminator)]
 findElims' (pred, _) ctxs =
   sortBy (\x y -> compare (cost (snd x)) (cost (snd y))) $
@@ -318,6 +319,7 @@ pushContext = do
   ps <- get
   put ps{ contexts = emptyContext : contexts ps
         , spines = emptySpine : spines ps
+        , caseAtoms = HashSet.empty : caseAtoms ps
         , depthMaps =
           if null (depthMaps ps) then [IntMap.empty] else head (depthMaps ps) : depthMaps ps
         , contextDepth = contextDepth ps + 1 }
@@ -327,6 +329,7 @@ popContext = do
   ps <- get
   put ps{ contexts = tail (contexts ps)
         , spines = tail (spines ps)
+        , caseAtoms = tail (caseAtoms ps)
         , depthMaps = tail (depthMaps ps)
         , contextDepth = contextDepth ps - 1 }
 
@@ -347,10 +350,12 @@ withSubgoal d f = do
   let (ctxs', ctxs) = splitAt k (contexts ps)
   let (gs', g:gs) = splitAt k (goals ps)
   let (sps', sps) = splitAt k (spines ps)
+  let (cas', cas) = splitAt k (caseAtoms ps)
   let (mps', mps) = splitAt k (depthMaps ps)
   put ps{ contexts = ctxs
         , goals = g:gs
         , spines = sps
+        , caseAtoms = cas
         , depthMaps = mps
         , contextDepth = d }
   a <- f g
@@ -358,12 +363,28 @@ withSubgoal d f = do
   put ps'{  contexts = ctxs' ++ contexts ps'
           , goals = gs' ++ goals ps'
           , spines = sps' ++ spines ps'
+          , caseAtoms = cas' ++ caseAtoms ps'
           , depthMaps =
               foldr (\mp mps -> IntMap.union mp (head (depthMaps ps')) : mps)
                 (depthMaps ps')
                 mps'
           , contextDepth = contextDepth ps }
   return a
+
+fixAtom :: Atom -> ProofMonad p Atom
+fixAtom (s, args) = do
+  args' <- mapM U.applyBindings args
+  return (s, args')
+
+checkCase :: Symbol -> Atom -> ProofMonad p ()
+checkCase s a = do
+  a' <- fixAtom a
+  ps <- get
+  let (set:sets) = caseAtoms ps
+  if HashSet.member (s, a') set then
+    empty
+  else
+    put ps{caseAtoms = HashSet.insert (s, a') set : sets}
 
 nextSymbolNamed :: String -> ProofMonad p Symbol
 nextSymbolNamed s = do
@@ -379,8 +400,8 @@ nextSymbol = nextSymbolNamed ""
 {- terms & parameters -}
 
 unifyAtoms :: Atom -> Atom -> ProofMonad p ()
-unifyAtoms (s1, _) (s2, _) | s1 /= s2 = empty
-unifyAtoms (_, args1) (_, args2) = zipWithM_ U.unify args1 args2
+unifyAtoms (s, args1) (s', args2) | s == s' = zipWithM_ U.unify args1 args2
+unifyAtoms _ _ = empty
 
 generateTerm :: Int -> ProofMonad p Term
 generateTerm n = do
@@ -418,7 +439,8 @@ checkParams ts = do
       ps <- get
       let d = contextDepth ps
       let mp = head (depthMaps ps)
-      if fromMaybe maxInt (IntMap.lookup (sid s) mp) > d then
+      if sid s > maxSymbolId (signature ps) &&
+          fromMaybe maxInt (IntMap.lookup (sid s) mp) > d then
         empty
       else
         foldl' (\a x -> a >>= \su -> checkParamsInTerm su x)
@@ -435,7 +457,8 @@ search' :: Proof p => Int -> [Term] -> PFormula ->
   ProofMonad p (IntSet, DList Term, p)
 search' 0 _ _ = failDepth
 search' _ _ (PAtom (s, _)) | s == sBottom = empty
-search' n env (PAtom a) = searchElim n env a
+search' n env (PAtom a) = do
+  searchElim n env a
 search' n env a@(PImpl _ _) = intros n env a
 search' n env a@(PForall _ _) = intros n env a
 search' n env (PAnd a b) = do
@@ -544,18 +567,19 @@ fixApplyElims n env k s es = do
   where
     getMaxDepth su = do
       mp <- getDepthMap
-      return $ IntSet.foldl' (\a x -> max a (fromJust $ IntMap.lookup x mp)) 0 su
+      return $ IntSet.foldl' (\a x -> max a (fromMaybe 0 (IntMap.lookup x mp))) 0 su
 
-applyCElims :: Proof p => Int -> [Term] -> [Symbol] -> Symbol -> CElims ->
+applyCElims :: Proof p => Atom -> Int -> [Term] -> [Symbol] -> Symbol -> CElims ->
   ProofMonad p (IntSet, DList Term, p)
-applyCElims n env _ s (Elims _ es) = do
+applyCElims _ n env _ s (Elims _ es) = do
   applyElims n env s es
-applyCElims n env params s (ECase k es idx phi1 es1 phi2 es2 ces) = do
+applyCElims a n env params s (ECase k es idx phi1 es1 phi2 es2 ces) = do
   (env0, env', d, p) <- fixApplyElims n env k s es
   s' <- withSubgoal d (solveCaseSubgoal env0 p)
-  applyCElims n env' params s' (subst env0 ces)
+  applyCElims a n env' params s' (subst env0 ces)
   where
     solveCaseSubgoal env0 p g = do
+      checkCase s a
       (_, _, pg) <- search' n [] (PImpl (subst env0 phi2, map (subst env0) es2) g)
       s' <- nextSymbol
       updateSpine (\sp p' ->
@@ -564,18 +588,18 @@ applyCElims n env params s (ECase k es idx phi1 es1 phi2 es2 ces) = do
           IRight -> sp (mkCase p pg (mkLam s' (subst env0 phi1) p')))
       addElims s' (map (subst env0) es1)
       return s'
-applyCElims n env params s (EEx _ k es a eas ces) = do
+applyCElims a n env params s (EEx _ k es phi eas ces) = do
   (env0, env', d, p) <- fixApplyElims n env k s es
   let sa = head params
   let env0' = tfun sa [] : env0
   s' <- withSubgoal d (insertExElim sa env0' p)
   addElims s' (map (subst env0') eas)
-  applyCElims n (tail env') (tail params) s' (subst env0' ces)
+  applyCElims a n (tail env') (tail params) s' (subst env0' ces)
   where
     insertExElim sa env0' p _ = do
       s' <- nextSymbol
       updateSpine (\sp p' ->
-        sp (mkExElim p (mkALam sa (mkLam s' (subst env0' a) p'))))
+        sp (mkExElim p (mkALam sa (mkLam s' (subst env0' phi) p'))))
       addParam sa
       return s'
 
@@ -604,7 +628,7 @@ applyElim n s e a = do
       (env, params) <- createEVars (elims e)
       let a' = second (map (subst (reverse env))) (target e)
       unifyAtoms a a'
-      applyCElims n env params s (elims e)
+      applyCElims a n env params s (elims e)
 
 searchCompiled :: Proof p => ProofState p -> Int -> PFormula -> Either Bool [p]
 searchCompiled ps n phi =

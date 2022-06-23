@@ -1,6 +1,4 @@
-{-# LANGUAGE DeriveTraversable #-}
-{-# LANGUAGE FlexibleInstances #-}
-{-# LANGUAGE UnicodeSyntax #-}
+{-# LANGUAGE DeriveTraversable, FlexibleInstances, UnicodeSyntax #-}
 
 module Formula where
 
@@ -9,6 +7,7 @@ import Control.Monad.State
 import Control.Monad.Identity
 import Control.Unification
 import Control.Unification.IntVar
+import Data.Hashable
 import Data.Char
 import Data.HashMap.Strict (HashMap)
 import qualified Data.HashMap.Strict as HashMap
@@ -25,6 +24,9 @@ data Symbol = Symbol {sname :: String, sid :: Int}
 instance Eq Symbol where
   s1 == s2 = sid s1 == sid s2
 
+instance Hashable Symbol where
+  hashWithSalt k s = hashWithSalt k (sid s)
+
 -- terms and formulas use 0-based de-Bruijn indices
 data TermF t = Var Int | Fun Symbol [t] deriving (Eq, Functor, Foldable, Traversable)
 
@@ -36,6 +38,11 @@ instance Unifiable TermF where
   zipMatch _ _ = Nothing
 
 type Term = UTerm TermF IntVar
+
+instance Hashable Term where
+  hashWithSalt k (UVar v) = hashWithSalt k (0 :: Int, getVarID v)
+  hashWithSalt k (UTerm (Var v)) = hashWithSalt k (1 :: Int, v)
+  hashWithSalt k (UTerm (Fun s args)) = hashWithSalt k (2 :: Int, (sid s, args))
 
 varOccurs :: Int -> Term -> Bool
 varOccurs n (UTerm (Var m)) = n == m

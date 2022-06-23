@@ -22,6 +22,7 @@ executable cprover
                        optparse-simple,
                        timeit,
                        list-extras,
+                       hashable,
                        unification-fd,
                        logict,
                        containers,
