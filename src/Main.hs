@@ -47,15 +47,15 @@ data Options = Options
 doSearch :: Options -> Formula -> IO ()
 doSearch opts phi = timeIt $ do
   if produceProof opts then
-    print (go 2 :: PTerm)
+    case Search.searchIter sig phi :: [PTerm] of
+      [] -> putStrLn "failure"
+      x:_ -> print x
   else
-    (go 2 :: ()) `seq` putStrLn "success"
+    case Search.searchIter sig phi :: [()] of
+      [] -> putStrLn "failure"
+      _ -> putStrLn "success"
   where
     sig = createSignature phi
-    go n =
-      case Search.search sig n phi of
-        [] -> go (n + 1)
-        x:_ -> x
 
 repl :: Options -> IO ()
 repl opts = do

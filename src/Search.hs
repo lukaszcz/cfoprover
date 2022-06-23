@@ -1,9 +1,10 @@
-{-# LANGUAGE MultiParamTypeClasses, FlexibleInstances #-}
-module Search(search) where
+{-# LANGUAGE MultiParamTypeClasses, FlexibleInstances, DeriveFoldable #-}
+module Search(search, searchIter) where
 
 import Control.Monad.State
 import Control.Monad.Logic
 import Control.Monad.Error.Class
+import Control.Monad.Reader
 import Control.Applicative
 import qualified Control.Unification as U
 import Control.Unification.IntVar
@@ -209,7 +210,26 @@ initProofState sig = ProofState {
   , signature = sig
   }
 
-type ProofMonad p = StateT (ProofState p) (IntBindingT TermF Logic)
+data EList e a = ENil e | ECons a (EList e a) deriving (Foldable)
+
+type ELogic e = LogicT (Reader e)
+
+observeE :: Monoid e => ELogic e a -> Either e [a]
+observeE lt =
+  case runReader (unLogicT lt (\a f -> reader (ECons a . runReader f)) (reader ENil)) mempty of
+    ENil e -> Left e
+    l -> Right $ foldr (:) [] l
+
+failE :: Monoid e => e -> ELogic e a
+failE e = LogicT $ \_ fk -> reader (\e' -> runReader fk (e <> e'))
+
+instance Semigroup Bool where
+  (<>) = (||)
+
+instance Monoid Bool where
+  mempty = False
+
+type ProofMonad p = StateT (ProofState p) (IntBindingT TermF (ELogic Bool))
 
 instance MonadLogic m => MonadError () (IntBindingT t m) where
     throwError () = empty
@@ -218,6 +238,9 @@ instance MonadLogic m => MonadError () (IntBindingT t m) where
 instance U.Fallible t v () where
     occursFailure _ _ = ()
     mismatchFailure _ _ = ()
+
+failDepth :: ProofMonad p a
+failDepth = lift $ lift $ failE True
 
 nextEVar :: ProofMonad p Term
 nextEVar = U.UVar <$> lift U.freeVar
@@ -369,7 +392,7 @@ generateTerm n = do
   where
     cont =
       if n == 0 then
-        empty
+        failDepth
       else do
         ps <- get
         let sig = signature ps
@@ -410,7 +433,7 @@ checkParams ts = do
 {- search' limit env formula = (symbolsUsed, terms (evars), proof) -}
 search' :: Proof p => Int -> [Term] -> PFormula ->
   ProofMonad p (IntSet, DList Term, p)
-search' 0 _ _ = empty
+search' 0 _ _ = failDepth
 search' _ _ (PAtom (s, _)) | s == sBottom = empty
 search' n env (PAtom a) = searchElim n env a
 search' n env a@(PImpl _ _) = intros n env a
@@ -478,7 +501,7 @@ searchExFalso n env a = wrapExFalso a $ searchElim n env aBottom
 
 searchAfterIntros :: Proof p => Int -> [Term] -> PFormula ->
   ProofMonad p (IntSet, DList Term, p)
-searchAfterIntros 0 _ _ = empty
+searchAfterIntros 0 _ _ = failDepth
 searchAfterIntros n env (PAtom a) | a == aBottom = searchElim n env aBottom
 searchAfterIntros n env ga@(PAtom a) = do
   es1 <- findElims a
@@ -583,13 +606,34 @@ applyElim n s e a = do
       unifyAtoms a a'
       applyCElims n env params s (elims e)
 
-search :: Proof p => Signature -> Int -> Formula -> [p]
-search sig depthLimit formula =
-  observeAll $
+searchCompiled :: Proof p => ProofState p -> Int -> PFormula -> Either Bool [p]
+searchCompiled ps n phi =
+  observeE $
   evalIntBindingT $
   evalStateT
-    (intros depthLimit [] (compileFormula formula) >>= applyTermBindings')
-    (initProofState sig)
+    (intros n [] phi >>= applyTermBindings')
+    ps
   where
     applyTermBindings' (_, _, p) =
-      applyTermBindings (\t -> resolveTermEVars depthLimit t >> U.applyBindings t) p
+      applyTermBindings (\t -> resolveTermEVars n t >> U.applyBindings t) p
+
+-- | `searchLimited sig depthLimit formula` returns:
+-- * `Left True` when no proof was found and the search was interrupted due to
+--   the depth limit
+-- * `Left False` when no proof was found and the search was exhaustive
+-- * `Right ps` when proofs `ps` were found
+search :: Proof p => Signature -> Int -> Formula -> Either Bool [p]
+search sig depthLimit formula =
+  searchCompiled (initProofState sig) depthLimit (compileFormula formula)
+
+-- | `searchIter` calls `search` in iterative deepening fashion
+searchIter :: Proof p => Signature -> Formula -> [p]
+searchIter sig formula = go 2
+  where
+    phi = compileFormula formula
+    ps = initProofState sig
+    go n =
+      case searchCompiled ps n phi of
+        Left True -> go (n + 1)
+        Left False -> []
+        Right ps -> ps
