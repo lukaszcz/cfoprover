@@ -95,7 +95,8 @@ atomEquals (s1, args1) (s2, args2) | s1 == s2 = and <$> zipWithM equals args1 ar
 atomEquals _ _ = return False
 
 data Signature = Signature
-  { symbols :: [Symbol],
+  { functionSymbols :: [Symbol],
+    predicateSymbols :: [Symbol],
     symbolArity :: IntMap Int,
     maxSymbolId :: Int
   }
@@ -103,32 +104,34 @@ data Signature = Signature
 createSignature :: Formula -> Signature
 createSignature phi =
   sig
-    { symbols =
-        unique $
-          sortBy
-            (\x y -> compare (sid x) (sid y))
-            (symbols sig)
-    }
+    { functionSymbols = sortUnique (functionSymbols sig)
+    , predicateSymbols = sortUnique (predicateSymbols sig) }
   where
-    sig = go (Signature [] IntMap.empty 0) phi
-    go sig (Atom (s, args)) = goTerm sig (UTerm (Fun s args))
+    sig = go (Signature [] [] IntMap.empty 0) phi
+    go sig (Atom (s, args)) = goTerm True sig (UTerm (Fun s args))
     go sig (Impl a b) = go (go sig a) b
     go sig (And a b) = go (go sig a) b
     go sig (Or a b) = go (go sig a) b
     go sig (Forall _ a) = go sig a
     go sig (Exists _ a) = go sig a
-    goTerm sig (UTerm (Fun s args)) =
-      let sig' =
+    goTerm isPred sig (UTerm (Fun s args)) =
+      foldl' (goTerm False) sig' args
+      where
+        sig0 =
             sig
-              { symbols = s : symbols sig,
-                symbolArity = IntMap.insert (sid s) (length args) (symbolArity sig),
+              { symbolArity = IntMap.insert (sid s) (length args) (symbolArity sig),
                 maxSymbolId = max (maxSymbolId sig) (sid s)
               }
-       in foldl' goTerm sig' args
-    goTerm sig _ = sig
+        sig' =
+          if isPred then
+            sig0{ predicateSymbols = s : predicateSymbols sig }
+          else
+            sig0{ functionSymbols = s : functionSymbols sig }
+    goTerm _ sig _ = sig
     unique (x : y : t) | x == y = unique (x : t)
     unique (x : t) = x : unique t
     unique [] = []
+    sortUnique = unique . sortBy (\x y -> compare (sid x) (sid y))
 
 {----------------------------------------------------------------------------}
 {- standard symbols & formulas -}

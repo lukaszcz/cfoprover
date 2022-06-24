@@ -320,6 +320,9 @@ addParam s = do
         , depthMaps =
           IntMap.insert (sid s) (contextDepth ps) (head (depthMaps ps)) : tail (depthMaps ps) }
 
+getParams :: ProofMonad p IntSet
+getParams = IntSet.unions . map cParams <$> getContexts
+
 pushContext :: ProofMonad p ()
 pushContext = do
   ps <- get
@@ -429,11 +432,11 @@ unifyAtoms _ _ = empty
 
 generateTerm :: Int -> ProofMonad p Term
 generateTerm n = do
-  ctx <- getContext
-  if IntSet.null (cParams ctx) then
-    return (tfun (Symbol "_c" (maxInt - 1)) []) <|> cont
+  params <- getParams
+  if IntSet.null params then
+    return (tfun (Symbol "_c" (-1)) []) <|> cont
   else
-    IntSet.foldl' (\a c -> return (tfun (Symbol ("_c" ++ show c) c) []) <|> a) cont (cParams ctx)
+    IntSet.foldl' (\a c -> return (tfun (Symbol ("_c" ++ show c) c) []) <|> a) cont params
   where
     cont =
       if n == 0 then
@@ -441,7 +444,7 @@ generateTerm n = do
       else do
         ps <- get
         let sig = signature ps
-        foldl' (build sig) empty (symbols sig)
+        foldl' (build sig) empty (functionSymbols sig)
         where
           build sig a s = do
             let k = fromJust $ IntMap.lookup (sid s) (symbolArity sig)
