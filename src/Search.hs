@@ -96,9 +96,9 @@ prependElim e (ECase k es idx a1 es1 a2 es2 elims) = ECase k (shift k e : es) id
 prependElim e (EEx s k es a eas elims) = EEx s k (shift k e : es) a eas elims
 
 prependForallElim :: CElims -> CElims
-prependForallElim (Elims k es) = Elims (k + 1) (EAApp (tvar 0) : es)
-prependForallElim (ECase k es idx a1 es1 a2 es2 elims) = ECase (k + 1) (EAApp (tvar 0) : es) idx a1 es1 a2 es2 elims
-prependForallElim (EEx s k es a eas elims) = EEx s (k + 1) (EAApp (tvar 0) : es) a eas elims
+prependForallElim (Elims k es) = Elims (k + 1) (EAApp (tvar k) : es)
+prependForallElim (ECase k es idx a1 es1 a2 es2 elims) = ECase (k + 1) (EAApp (tvar k) : es) idx a1 es1 a2 es2 elims
+prependForallElim (EEx s k es a eas elims) = EEx s (k + 1) (EAApp (tvar k) : es) a eas elims
 
 compileFormula :: Formula -> PFormula
 compileFormula (Atom a) = PAtom a
@@ -111,48 +111,28 @@ compileFormula (Exists s a) = PExists s a (compileFormula a)
 compileElims :: Formula -> [Eliminator]
 compileElims (Atom a) = [Eliminator {target = a, elims = Elims 0 [], bindersNum = 0, cost = 0}]
 compileElims (Impl a b) =
-  map
-    ( \e ->
-        e
-          { elims = prependElim (EApp (compileFormula a)) (elims e),
-            cost = cost e + 10
-          }
-    )
-    (compileElims b)
+  map (\e -> e{ elims = prependElim (EApp (compileFormula a)) (elims e)
+              , cost = cost e + 10 })
+      (compileElims b)
 compileElims (And a b) =
   map (\e -> e {elims = prependElim (EProj ILeft) (elims e)}) (compileElims a)
     ++ map (\e -> e {elims = prependElim (EProj IRight) (elims e)}) (compileElims b)
 compileElims (Or a b) =
-  map
-    ( \e ->
-        e
-          { elims = ECase 0 [] ILeft a eas b ebs (elims e),
-            cost = cost e + 10
-          }
-    )
-    eas
-    ++ map
-      ( \e ->
-          e
-            { elims = ECase 0 [] IRight b ebs a eas (elims e),
-              cost = cost e + 10
-            }
-      )
+  map (\e -> e{ elims = ECase 0 [] ILeft a eas b ebs (elims e)
+              , cost = cost e + 10 })
+      eas
+    ++
+  map (\e -> e{ elims = ECase 0 [] IRight b ebs a eas (elims e)
+              , cost = cost e + 10 })
       ebs
   where
     eas = compileElims a
     ebs = compileElims b
 compileElims (Forall _ a) =
-  map
-    ( \e ->
-        e
-          { elims = prependForallElim (elims e),
-            bindersNum = bindersNum e + 1,
-            cost =
-              cost e
-                + if any (varOccurs (bindersNum e)) (snd (target e)) then 1 else 5
-          }
-    )
+  map (\e -> e{ elims = prependForallElim (elims e)
+              , bindersNum = bindersNum e + 1
+              , cost = cost e
+                  + if any (varOccurs (bindersNum e)) (snd (target e)) then 1 else 5 })
     (compileElims a)
 compileElims (Exists s a) =
   map (\e -> e {elims = EEx s 0 [] a eas (elims e), bindersNum = bindersNum e + 1}) eas
@@ -382,14 +362,14 @@ withSubgoal d f = do
           , contextDepth = contextDepth ps }
   return a
 
-fixAtom :: Atom -> ProofMonad p Atom
-fixAtom (s, args) = do
+applyBindingsInAtom :: Atom -> ProofMonad p Atom
+applyBindingsInAtom (s, args) = do
   args' <- mapM U.applyBindings args
   return (s, args')
 
 checkCase :: Symbol -> Atom -> ProofMonad p ()
 checkCase s a = do
-  a' <- fixAtom a
+  a' <- applyBindingsInAtom a
   ps <- get
   let (set:sets) = caseAtoms ps
   if HashSet.member (s, a') set then
@@ -399,12 +379,12 @@ checkCase s a = do
 
 isInContext :: Formula -> ProofMonad p Bool
 isInContext phi = do
-  phi' <- mapAtomsM (\ _ _ -> fixAtom) phi
+  phi' <- mapAtomsM (\ _ _ -> applyBindingsInAtom) phi
   any (HashSet.member phi' . cFormulas) <$> getContexts
 
 addToContext :: Formula -> ProofMonad p Bool
 addToContext phi = do
-  phi' <- mapAtomsM (\ _ _ -> fixAtom) phi
+  phi' <- mapAtomsM (\ _ _ -> applyBindingsInAtom) phi
   ps <- get
   if any (HashSet.member phi' . cFormulas) (contexts ps) then
     return False
@@ -616,7 +596,7 @@ fixApplyElims n visited env k s es = do
 applyCElims :: Proof p => Atom -> Int -> [Atom] -> [Term] -> [Symbol] -> Symbol -> CElims ->
   ProofMonad p (IntSet, DList Term, p)
 applyCElims _ n visited env _ s (Elims _ es) = do
-  applyElims n visited env s es
+  applyElims n visited (reverse env) s es
 applyCElims a n visited env params s (ECase k es idx phi1 es1 phi2 es2 ces) = do
   (env0, env', d, p) <- fixApplyElims n visited env k s es
   s' <- withSubgoal d (solveCaseSubgoal env0 p)
