@@ -1,0 +1,51 @@
+a -> a
+(a -> a) -> a
+b -> a
+a -> (a -> b) -> b
+(a -> b) -> ~b -> ~a
+(a -> ~a) -> ~a
+(~a -> a) -> a
+a \/ ~a -> (~a -> a) -> a
+a -> ~~a
+~~a -> a
+a \/ ~a -> ~~a -> a
+(~~a -> a) -> a \/ ~a
+a \/ ~a
+~~(a \/ ~a)
+(a \/ b) /\ c <-> (a /\ c) \/ (b /\ c)
+a /\ b <-> b /\ a
+~(a \/ b) <-> ~a /\ ~b
+~(a /\ b) -> ~a \/ ~b
+~a \/ ~b -> ~(a /\ b)
+~a \/ ~~a
+(a \/ b -> c) -> (a -> c) /\ (b -> c)
+a \/ b -> b \/ a
+(a \/ (b /\ (b -> a))) /\ c -> a /\ c
+(b -> a) /\ (a \/ b) -> a
+a \/ b -> a
+(c -> b) -> (a -> b \/ c) -> a -> b
+((b -> b) -> b -> a) -> a
+(a -> (b \/ (c /\ (c -> b)))) -> a -> b
+(a \/ b) -> (b -> b') -> (a -> a') -> a' \/ b'
+(a \/ b) -> (a -> c1) -> (a -> c2) -> (c1 \/ b) /\ (b \/ c2)
+a \/ b \/ c -> c \/ a \/ b
+(a \/ b) -> (a' \/ b') -> (b -> a' -> a) -> a \/ b'
+forall x P(x)
+forall x P(x) -> P(a)
+P(a) -> exists x P(x)
+forall x P(x) -> exists x P(x)
+exists x P(x) -> forall x P(x)
+exists x forall y P(x,y) -> forall y exists x P(x,y)
+exists x forall y P(x,y) -> forall y exists x P(y,x)
+forall x exists y P(x,y) -> exists y forall x P(x,y)
+exists x forall y P(y,x) -> forall y exists x P(y,x)
+exists x (P /\ Q(x)) <-> P /\ exists x Q(x)
+forall x (P \/ Q(x)) -> P \/ forall x Q(x)
+P \/ forall x Q(x) -> forall x (P \/ Q(x))
+exists x P(x) -> ~forall x ~P(x)
+forall x P(x) \/ forall x ~P(x) -> ~forall x ~P(x) -> exists x P(x)
+~~forall x P(x) -> forall x ~~P(x)
+forall x (P(b) -> P(x)) -> P(b) -> Q(a) -> exists x (P(x) /\ Q(x))
+forall x (P(x) \/ Q(x)) -> (Q(a) -> P(b) -> P(a)) -> P(a) \/ Q(b)
+forall x exists y (P(x,y) /\ P(y,x)) -> forall x forall y forall z (P(x,y) -> P(y,z) -> P(x,z)) -> forall x P(x,x)
+forall x forall y forall z (P(x,y) -> P(y,z) -> P(x,z)) -> forall x forall y (P(x,y) -> P(y,x)) -> forall x forall y exists z (P(x,z) /\ P(y,z)) -> forall x forall y P(x,y)
