@@ -31,6 +31,8 @@ data CElims
   = Elims Int [Elim PFormula]
   | ECase Int [Elim PFormula] Idx Formula [Eliminator] Formula [Eliminator] CElims
   | EEx String Int [Elim PFormula] Formula [Eliminator] CElims
+  -- The Int argument is the number of universal quantifiers before, e.g.,
+  -- forall x y . Q(x,y) -> forall z P(x,z) \/ forall z P(y,z) has two
 
 data Eliminator = Eliminator
   { target :: Atom,
@@ -545,7 +547,7 @@ intros' n env (PForall name a) = do
   updateSpine (\sp p -> sp (mkALam s p))
   intros' n (tfun s [] : env) a
 intros' n env x = do
-  pushGoal x
+  pushGoal (subst env x) -- this should be lazy
   (su, ts, p) <- searchAfterIntros n env x
   popGoal
   sp <- getSpine
