@@ -1,4 +1,4 @@
-{-# LANGUAGE DeriveTraversable, FlexibleInstances, UnicodeSyntax #-}
+{-# LANGUAGE DeriveTraversable, FlexibleInstances, FlexibleContexts, UnicodeSyntax #-}
 
 module Formula where
 
@@ -83,6 +83,10 @@ mapAtomsM f = mapAtoms' f 0 []
 
 mapAtoms :: (Int -> [String] -> Atom -> Atom) -> Formula -> Formula
 mapAtoms f a = runIdentity $ mapAtomsM (\n env x -> return (f n env x)) a
+
+atomEquals :: BindingMonad TermF IntVar m => Atom -> Atom -> m Bool
+atomEquals (s1, args1) (s2, args2) | s1 == s2 = and <$> zipWithM equals args1 args2
+atomEquals _ _ = return False
 
 data Signature = Signature
   { symbols :: [Symbol],
