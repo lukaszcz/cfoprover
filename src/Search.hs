@@ -172,16 +172,22 @@ instance Show PFormula where
 {- proof monad -}
 
 data Context = Context {
-      -- 'elims' maps target head symbol ids to:
+      -- 'cElims' maps target head symbol ids to:
       -- (context variable symbol, depth of variable, eliminator)
       cElims :: IntMap [(Symbol,Eliminator)]
-      -- 'params' contains symbol ids of the parameters in the context
+      -- 'cParams' contains symbol ids of the parameters in the context
     , cParams :: IntSet
-      -- invariant: eliminators in a context contain no free term variables
+      -- 'cFormulas' contains the formulas in the context (from which the
+      -- eliminators are created)
+    , cFormulas :: HashSet Formula
+      -- invariant: formulas and eliminators in a context contain no free term
+      -- variables (but may contain uninstantiated evars)
     }
 
 emptyContext :: Context
-emptyContext = Context{cElims = IntMap.empty, cParams = IntSet.empty}
+emptyContext = Context{ cElims = IntMap.empty
+                      , cParams = IntSet.empty
+                      , cFormulas = HashSet.empty }
 
 type Spine p = p -> p
 {- given a proof for the spine hole, returns a complete proof term -}
@@ -386,6 +392,24 @@ checkCase s a = do
   else
     put ps{caseAtoms = HashSet.insert (s, a') set : sets}
 
+isInContext :: Formula -> ProofMonad p Bool
+isInContext phi = do
+  phi' <- mapAtomsM (\ _ _ -> fixAtom) phi
+  any (HashSet.member phi' . cFormulas) <$> getContexts
+
+addToContext :: Formula -> ProofMonad p Bool
+addToContext phi = do
+  phi' <- mapAtomsM (\ _ _ -> fixAtom) phi
+  ps <- get
+  if any (HashSet.member phi' . cFormulas) (contexts ps) then
+    return False
+  else do
+    let (ctx:cs) = contexts ps
+    put ps{ contexts = add phi' ctx : cs }
+    return True
+    where
+      add phi' ctx = ctx{ cFormulas = HashSet.insert phi' (cFormulas ctx) }
+
 nextSymbolNamed :: String -> ProofMonad p Symbol
 nextSymbolNamed s = do
   ps <- get
@@ -465,7 +489,12 @@ search' n visited env (PAtom a) = do
     searchElim n visited a'
   where
     a' = subst env a
-search' n _ env a@(PImpl _ _) = intros n env a
+search' n visited env a@(PImpl (phi, _) a') = do
+  b <- isInContext (subst env phi)
+  if b then
+    search' n visited env a'
+  else
+    intros n env a
 search' n _ env a@(PForall _ _) = intros n env a
 search' n visited env (PAnd a b) = do
   (su1, ts1, p1) <- search' n visited env a
@@ -498,11 +527,15 @@ intros n env a = do
 
 intros' :: Proof p => Int -> [Term] -> PFormula ->
   ProofMonad p (IntSet, DList Term, p)
-intros' n env (PImpl (a, elims) b) = do
-  s <- nextSymbol
-  addElims s (map (subst env) elims)
-  updateSpine (\sp p -> sp (mkLam s (subst env a) p))
-  intros' n env b
+intros' n env (PImpl (phi, elims) a) = do
+  b <- addToContext (subst env phi)
+  if b then do
+    s <- nextSymbol
+    addElims s (map (subst env) elims)
+    updateSpine (\sp p -> sp (mkLam s (subst env phi) p))
+    intros' n env a
+  else
+    intros' n env a
 intros' n env (PForall name a) = do
   s <- nextSymbolNamed name
   addParam s

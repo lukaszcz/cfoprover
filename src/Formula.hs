@@ -1,4 +1,4 @@
-{-# LANGUAGE DeriveTraversable, FlexibleInstances, FlexibleContexts, UnicodeSyntax #-}
+{-# LANGUAGE DeriveTraversable, DeriveGeneric, FlexibleInstances, FlexibleContexts, UnicodeSyntax #-}
 
 module Formula where
 
@@ -15,6 +15,7 @@ import Data.IntMap.Strict (IntMap)
 import qualified Data.IntMap.Strict as IntMap
 import Data.List as List
 import Data.List.Extras.Pair
+import GHC.Generics
 
 {------------------------------------}
 {- terms & formulas -}
@@ -69,6 +70,11 @@ data Formula
   | Or Formula Formula
   | Forall String Formula
   | Exists String Formula
+  deriving (Generic)
+
+-- this is not entirely correct because the quantifier variable names are not
+-- ignored, but it works for the purposes of Search.hs
+instance Hashable Formula where
 
 mapAtoms' :: Applicative m => (Int -> [String] -> Atom -> m Atom) -> Int -> [String] -> Formula -> m Formula
 mapAtoms' f n env (Atom a) = Atom <$> f n env a
@@ -300,6 +306,8 @@ readLexeme s =
     '/' : '\\' : s' -> Just ("and", s')
     '\\' : '/' : s' -> Just ("or", s')
     '-' : '>' : s' -> Just ("->", s')
+    '<' : '-' : '>' : s' -> Just ("<->", s')
+    '~' : s' -> Just ("not", s')
     '⊥' : s' -> Just ("false", s')
     '⊤' : s' -> Just ("true", s')
     '∧' : s' -> Just ("and", s')
@@ -357,9 +365,12 @@ readAtom s =
       return (Atom (sym, args), s'')
     _ -> readError "expected an atom" s
 
-readQuantifier :: String -> State ReadState (Formula, String)
-readQuantifier s =
+readNegQuant :: String -> State ReadState (Formula, String)
+readNegQuant s =
   case readLexeme s of
+    Just ("not", s1) -> do
+      (r, s2) <- readNegQuant s1
+      return (Impl r fBottom, s2)
     Just ("forall", s1) -> go Forall s1
     Just ("exists", s1) -> go Exists s1
     _ -> readAtom s
@@ -373,13 +384,13 @@ readQuantifier s =
               (r, s4) <- readFormula s3
               return (q x (abstract sym r), s4)
             _ -> do
-              (r, s3) <- readQuantifier s2
+              (r, s3) <- readNegQuant s2
               return (q x (abstract sym r), s3)
         _ -> readError "expected variable name" s1
 
 readConjunction :: String -> State ReadState (Formula, String)
 readConjunction s = do
-  (a1, s1) <- readQuantifier s
+  (a1, s1) <- readNegQuant s
   case readLexeme s1 of
     Just ("and", s2) -> do
       (a2, s3) <- readConjunction s2
@@ -404,8 +415,17 @@ readImplication s = do
       return (Impl a1 a2, s3)
     _ -> return (a1, s1)
 
+readEquivalence :: String -> State ReadState (Formula, String)
+readEquivalence s = do
+  (a1, s1) <- readImplication s
+  case readLexeme s1 of
+    Just ("<->", s2) -> do
+      (a2, s3) <- readEquivalence s2
+      return (And (Impl a1 a2) (Impl a2 a1), s3)
+    _ -> return (a1, s1)
+
 readFormula :: String -> State ReadState (Formula, String)
-readFormula = readImplication
+readFormula = readEquivalence
 
 instance Read Formula where
   readsPrec _ s = [evalState (readFormula s) (ReadState HashMap.empty tMinSymbol)]
