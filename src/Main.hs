@@ -41,11 +41,12 @@ data Options = Options
   { tptp :: Bool
   , interactive :: Bool
   , produceProof :: Bool
+  , measureTime :: Bool
   , fileName :: String
   }
 
 doSearch :: Options -> Formula -> IO ()
-doSearch opts phi = timeIt $ do
+doSearch opts phi = (if measureTime opts then timeIt else id) $ do
   if produceProof opts then
     case Search.searchIter sig phi :: [PTerm] of
       [] -> putStrLn "failure"
@@ -71,28 +72,36 @@ repl opts = do
     repl opts
 
 batch :: Options -> IO ()
-batch opts = do
-  phi <-
-    if fileName opts == "" then do
-      s <- getContents
-      if tptp opts then parseTPTP s else return $ read s
-    else
-      if tptp opts then
+batch opts
+  | tptp opts = do
+    phi <-
+      if fileName opts == "" then do
+        getContents >>= parseTPTP
+      else
         parseTPTPFile (fileName opts)
+    doSearch opts phi
+  | fileName opts == "" = go stdin
+  | otherwise = withFile (fileName opts) ReadMode go
+  where
+    go h = do
+      done <- hIsEOF h
+      if done then
+        return ()
       else do
-        s <- readFile (fileName opts)
-        return $ read s
-  doSearch opts phi
+        s <- hGetLine h
+        doSearch opts (read s)
+        go h
 
 main :: IO ()
 main = do
   (opts,()) <- simpleOptions "0.1"
-                            "cprover"
-                            "An experimental connection-driven prover for first-order logic"
+                            "cfoprover"
+                            "An experimental connection-driven prover for intuitionistic first-order logic"
                             (Options <$>
                             switch (long "tptp") <*>
                             switch (short 'i' <> long "interactive") <*>
                             switch (short 'p' <> long "proof") <*>
+                            switch (short 't' <> long "time") <*>
                             argument str (metavar "FILE" <> value ""))
                             empty
   if interactive opts then

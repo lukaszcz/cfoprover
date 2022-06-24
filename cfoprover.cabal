@@ -1,6 +1,6 @@
 cabal-version:       2.0
 
-name:                cprover
+name:                cfoprover
 version:             0.1.0.0
 -- synopsis:
 -- description:
@@ -13,7 +13,7 @@ copyright:           Lukasz Czajka
 -- category:
 build-type:          Simple
 
-executable cprover
+executable cfoprover
   main-is:             Main.hs
   other-modules:       TPTP Formula Search
   -- other-extensions:
