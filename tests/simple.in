@@ -51,3 +51,7 @@ forall x exists y (P(x,y) /\ P(y,x)) -> forall x forall y forall z (P(x,y) -> P(
 forall x forall y forall z (P(x,y) -> P(y,z) -> P(x,z)) -> forall x forall y (P(x,y) -> P(y,x)) -> forall x forall y exists z (P(x,z) /\ P(y,z)) -> forall x forall y P(x,y)
 forall x P(x,a) -> forall x forall y (P(x,y) -> P(x,x)) -> forall x P(x,x)
 forall x P(x,a) -> forall x (exists y P(x,y) -> P(x,x)) -> forall x P(x,x)
+forall a forall b forall x (In(x, sum(a, b)) <-> In(x, a) \/ In(x, b)) /\ forall a forall b (Seteq(a, b) <-> Subset(a, b) /\ Subset(b, a)) /\ forall a forall b (Subset(a, b) <-> forall x (In(x, a) -> In(x, b))) -> forall a Seteq(sum(a, a), a)
+forall a forall b forall x (In(x, sum(a, b)) <-> In(x, a) \/ In(x, b)) -> forall a forall b (Seteq(a, b) <-> Subset(a, b) /\ Subset(b, a)) -> forall a forall b (Subset(a, b) <-> forall x (In(x, a) -> In(x, b))) -> forall a Seteq(a, sum(a, a))
+forall x (P(x) -> R(x) \/ exists y Q(x,y)) -> forall x (R(x) -> ~exists x P(x)) -> exists x P(x) -> exists x exists y Q(x,y)
+forall x exists y (P(x,y) /\ P(y,y)) -> exists z P(z,z)
