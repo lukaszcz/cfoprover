@@ -177,6 +177,10 @@ subst :: Substitutable a => [Term] -> a -> a
 subst [] x = x
 subst env x = nsubst 0 env x
 
+shift :: Substitutable t => Int -> t -> t
+shift 0 = id
+shift k = subst (map (\n -> tvar (n + k)) [0, 1 ..])
+
 class Abstractable a where
   -- nabstract n f t -> change function f into variable n
   nabstract :: Int -> Symbol -> a -> a
