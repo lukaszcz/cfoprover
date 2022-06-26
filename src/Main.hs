@@ -51,11 +51,11 @@ data Options = Options
 doSearch :: Options -> Formula -> IO ()
 doSearch opts phi = (if measureTime opts then timeIt else id) $ do
   if produceProof opts then
-    case Search.searchIter sig phi :: [PTerm] of
+    case Search.searchIter Search.defaultOptions sig phi :: [PTerm] of
       [] -> putStrLn "failure"
       x:_ -> print x
   else
-    case Search.searchIter sig phi :: [()] of
+    case Search.searchIter Search.defaultOptions sig phi :: [()] of
       [] -> putStrLn "failure"
       _ -> putStrLn "success"
   where
