@@ -3,11 +3,13 @@
 module Formula where
 
 import Control.Monad
+import Control.Monad.Except
 import Control.Monad.State
 import Control.Monad.Identity
 import Control.Unification
 import Control.Unification.IntVar
 import Data.Hashable
+import Data.Bifunctor
 import Data.Char
 import Data.HashMap.Strict (HashMap)
 import qualified Data.HashMap.Strict as HashMap
@@ -282,57 +284,67 @@ showsFormula env p (Exists s a) =
 instance Show Formula where
   showsPrec = showsFormula []
 
-readError :: String -> String -> a
-readError msg s = error $ msg ++ ": " ++ take 10 s ++ " (...)"
+-- (line, char)
+type Position = (Int, Int)
 
 data ReadState = ReadState {rSyms :: HashMap String Int, rSymId :: Int}
+data ReadError = ReadError {rPosition :: Position, rMessage :: String}
 
-newSymbol :: String -> State ReadState Symbol
+-- (position, remaining input)
+type Input = (Position, String)
+type ReadMonad a = ExceptT ReadError (State ReadState) a
+
+readError :: String -> Input -> ReadMonad a
+readError msg i = throwError $ ReadError (fst i) msg
+
+newSymbol :: String -> ReadMonad Symbol
 newSymbol s = do
   rs <- get
   let id = rSymId rs
   put rs {rSyms = HashMap.insert s id (rSyms rs), rSymId = id + 1}
   return $ Symbol s id
 
-getSymbol :: String -> State ReadState Symbol
+getSymbol :: String -> ReadMonad Symbol
 getSymbol s = do
   rs <- get
   case HashMap.lookup s (rSyms rs) of
     Just id -> return $ Symbol s id
     Nothing -> newSymbol s
 
-skipWhitespace :: String -> String
-skipWhitespace (c : s) | isSpace c = skipWhitespace s
-skipWhitespace s = s
+skipWhitespace :: Input -> Input
+skipWhitespace ((l, _), '\n' : s) = skipWhitespace ((l+1, 0), s)
+skipWhitespace ((l, n), c : s) | isSpace c = skipWhitespace ((l, n+1), s)
+skipWhitespace i = i
 
-readLexeme :: String -> Maybe (String, String)
+readLexeme :: Input -> Maybe (String, Input)
 readLexeme s =
-  case skipWhitespace s of
-    '&' : s' -> Just ("and", s')
-    '|' : s' -> Just ("or", s')
-    '/' : '\\' : s' -> Just ("and", s')
-    '\\' : '/' : s' -> Just ("or", s')
-    '-' : '>' : s' -> Just ("->", s')
-    '<' : '-' : '>' : s' -> Just ("<->", s')
-    '~' : s' -> Just ("not", s')
-    '⊥' : s' -> Just ("false", s')
-    '⊤' : s' -> Just ("true", s')
-    '∧' : s' -> Just ("and", s')
-    '∨' : s' -> Just ("or", s')
-    '→' : s' -> Just ("->", s')
-    '∀' : s' -> Just ("forall", s')
-    '∃' : s' -> Just ("exists", s')
-    s'@(c : _) | isAlpha c -> Just $ readIdent s'
-    c : s' -> Just ([c], s')
+  let ((l,n),s1) = skipWhitespace s in
+  case s1 of
+    '&' : s' -> Just ("and", ((l,n+1),s'))
+    '|' : s' -> Just ("or", ((l,n+1),s'))
+    '/' : '\\' : s' -> Just ("and", ((l,n+2),s'))
+    '\\' : '/' : s' -> Just ("or", ((l,n+2),s'))
+    '-' : '>' : s' -> Just ("->", ((l,n+2),s'))
+    '<' : '-' : '>' : s' -> Just ("<->", ((l,n+3),s'))
+    '~' : s' -> Just ("not", ((l,n+1),s'))
+    '⊥' : s' -> Just ("false", ((l,n+1),s'))
+    '⊤' : s' -> Just ("true", ((l,n+1),s'))
+    '∧' : s' -> Just ("and", ((l,n+1),s'))
+    '∨' : s' -> Just ("or", ((l,n+1),s'))
+    '→' : s' -> Just ("->", ((l,n+1),s'))
+    '∀' : s' -> Just ("forall", ((l,n+1),s'))
+    '∃' : s' -> Just ("exists", ((l,n+1),s'))
+    s'@(c : _) | isAlpha c -> Just $ readIdent ((l,n),s')
+    c : s' -> Just ([c], ((l,n+1),s'))
     _ -> Nothing
   where
-    readIdent (c : s)
+    readIdent ((l,n),c:s)
       | isAlphaNum c || c == '_' || c == '-' || c == '\'' =
-        let (s1, s2) = readIdent s
-         in (c : s1, s2)
+        let (s1, out) = readIdent ((l,n+1),s)
+         in (c : s1, out)
     readIdent s = ("", s)
 
-readTerm :: String -> State ReadState (Term, String)
+readTerm :: Input -> ReadMonad (Term, Input)
 readTerm s =
   case readLexeme s of
     Just (sf, s') -> do
@@ -341,7 +353,7 @@ readTerm s =
       return (UTerm (Fun sym args), s'')
     _ -> readError "expected a term" s
 
-readArgs :: (String -> State ReadState (a, String)) -> String -> State ReadState ([a], String)
+readArgs :: (Input -> ReadMonad (a, Input)) -> Input -> ReadMonad ([a], Input)
 readArgs f s =
   case readLexeme s of
     Just ("(", s1) -> go s1
@@ -356,11 +368,11 @@ readArgs f s =
         Just (")", s2) -> return ([t], s2)
         _ -> readError "expected ')'" s0
 
-readAtom :: String -> State ReadState (Formula, String)
+readAtom :: Input -> ReadMonad (Formula, Input)
 readAtom s =
   case readLexeme s of
     Just ("(", s') -> do
-      (r, s'') <- readFormula s'
+      (r, s'') <- readFormula' s'
       case readLexeme s'' of
         Just (")", s3) -> return (r, s3)
         _ -> readError "expected ')'" s''
@@ -372,7 +384,7 @@ readAtom s =
       return (Atom (sym, args), s'')
     _ -> readError "expected an atom" s
 
-readNegQuant :: String -> State ReadState (Formula, String)
+readNegQuant :: Input -> ReadMonad (Formula, Input)
 readNegQuant s =
   case readLexeme s of
     Just ("not", s1) -> do
@@ -388,14 +400,14 @@ readNegQuant s =
           sym <- newSymbol x
           case readLexeme s2 of
             Just (".", s3) -> do
-              (r, s4) <- readFormula s3
+              (r, s4) <- readFormula' s3
               return (q x (abstract sym r), s4)
             _ -> do
               (r, s3) <- readNegQuant s2
               return (q x (abstract sym r), s3)
         _ -> readError "expected variable name" s1
 
-readConjunction :: String -> State ReadState (Formula, String)
+readConjunction :: Input -> ReadMonad (Formula, Input)
 readConjunction s = do
   (a1, s1) <- readNegQuant s
   case readLexeme s1 of
@@ -404,7 +416,7 @@ readConjunction s = do
       return (And a1 a2, s3)
     _ -> return (a1, s1)
 
-readDisjunction :: String -> State ReadState (Formula, String)
+readDisjunction :: Input -> ReadMonad (Formula, Input)
 readDisjunction s = do
   (a1, s1) <- readConjunction s
   case readLexeme s1 of
@@ -413,7 +425,7 @@ readDisjunction s = do
       return (Or a1 a2, s3)
     _ -> return (a1, s1)
 
-readImplication :: String -> State ReadState (Formula, String)
+readImplication :: Input -> ReadMonad (Formula, Input)
 readImplication s = do
   (a1, s1) <- readDisjunction s
   case readLexeme s1 of
@@ -422,7 +434,7 @@ readImplication s = do
       return (Impl a1 a2, s3)
     _ -> return (a1, s1)
 
-readEquivalence :: String -> State ReadState (Formula, String)
+readEquivalence :: Input -> ReadMonad (Formula, Input)
 readEquivalence s = do
   (a1, s1) <- readImplication s
   case readLexeme s1 of
@@ -431,11 +443,23 @@ readEquivalence s = do
       return (And (Impl a1 a2) (Impl a2 a1), s3)
     _ -> return (a1, s1)
 
-readFormula :: String -> State ReadState (Formula, String)
-readFormula = readEquivalence
+readFormula' :: Input -> ReadMonad (Formula, Input)
+readFormula' = readEquivalence
+
+readFormula'' :: String -> Either ReadError (Formula, Input)
+readFormula'' s =
+  evalState (runExceptT $ readFormula' ((1,1),s)) (ReadState HashMap.empty tMinSymbol)
+
+readFormula :: String -> Either ReadError Formula
+readFormula s = case readFormula'' s of
+                  Left e -> Left e
+                  Right (_, (p, s)) | s /= "" -> Left $ ReadError p "input remaining"
+                  Right (phi, _) -> Right phi
 
 instance Read Formula where
-  readsPrec _ s = [evalState (readFormula s) (ReadState HashMap.empty tMinSymbol)]
+  readsPrec _ s = case readFormula'' s of
+                    Left e -> error $ show (rPosition e) ++ ": " ++ rMessage e
+                    Right x -> [second snd x]
 
 {-------------------------------------------------------------------}
 {- proof terms -}

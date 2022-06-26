@@ -26,16 +26,19 @@ tptpSig = TPTP.FormulaStruct {
         , TPTP.tEx = flip (foldr Exists)
      }
 
--- returns (formula, max function symbol id)
-parseTPTPFile :: FilePath -> IO Formula
+parseTPTPFile :: FilePath -> IO (Either String Formula)
 parseTPTPFile file = do
-  (phi, _) <- TPTP.parseFile tptpSig file
-  return phi
+  r <- TPTP.parseFile tptpSig file
+  case r of
+    Left e -> return $ Left e
+    Right (phi, _) -> return $ Right phi
 
-parseTPTP :: String -> IO Formula
+parseTPTP :: String -> IO (Either String Formula)
 parseTPTP s = do
-  (phi, _) <- TPTP.parse tptpSig s
-  return phi
+  r <- TPTP.parse tptpSig s
+  case r of
+    Left e -> return $ Left e
+    Right (phi, _) -> return $ Right phi
 
 data Options = Options
   { tptp :: Bool
@@ -67,30 +70,41 @@ repl opts = do
     return ()
   else do
     s <- getLine
-    phi <- if tptp opts then parseTPTP s else return $ read s
-    doSearch opts phi
+    if tptp opts then do
+      r <- parseTPTP s
+      case r of
+        Left e -> putStrLn $ "parse error: " ++ e
+        Right phi -> doSearch opts phi
+    else
+      case readFormula s of
+        Left (ReadError pos e) -> putStrLn $ show (snd pos) ++ ": parse error: " ++ e
+        Right phi -> doSearch opts phi
     repl opts
 
 batch :: Options -> IO ()
 batch opts
   | tptp opts = do
-    phi <-
+    r <-
       if fileName opts == "" then do
         getContents >>= parseTPTP
       else
         parseTPTPFile (fileName opts)
-    doSearch opts phi
-  | fileName opts == "" = go stdin
-  | otherwise = withFile (fileName opts) ReadMode go
+    case r of
+      Left e -> putStrLn $ "parse error: " ++ e
+      Right phi -> doSearch opts phi
+  | fileName opts == "" = go stdin 1
+  | otherwise = withFile (fileName opts) ReadMode (`go` 1)
   where
-    go h = do
+    go h ln = do
       done <- hIsEOF h
       if done then
         return ()
       else do
         s <- hGetLine h
-        doSearch opts (read s)
-        go h
+        case readFormula s of
+          Left (ReadError pos e) -> putStrLn $ show ln ++ ":" ++ show (snd pos) ++ ": parse error: " ++ e
+          Right phi -> doSearch opts phi
+        go h (ln + 1)
 
 main :: IO ()
 main = do

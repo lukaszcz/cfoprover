@@ -1,13 +1,14 @@
 {-|
   Conversion from the TPTP format
 -}
-module TPTP(parse, parseText, parseHandle, parseFile, FormulaSig(..), TPTPState(..)) where
+module TPTP(parse, parseText, parseHandle, parseFile, FormulaSig(..), TPTPState(..), TPTPError) where
 
 import System.IO
-import Control.Monad
+import Control.Monad.Except
 import Control.Monad.State
 import Data.Functor
 import Data.Foldable
+import Data.Either
 import Data.HashMap.Strict (HashMap)
 import qualified Data.HashMap.Strict as HashMap
 import Data.Text (Text,pack,unpack)
@@ -40,58 +41,77 @@ data TPTPState = TPTPState {
     , funs :: HashMap String Int
     }
 
-parse :: FormulaSig a b -> String -> IO (b, TPTPState)
+type TPTPError = String
+
+parse :: FormulaSig a b -> String -> IO (Either TPTPError (b, TPTPState))
 parse s = parseText s . pack
 
-parseText :: FormulaSig a b -> Text -> IO (b, TPTPState)
-parseText s = translate s . readTPTP
+parseText :: FormulaSig a b -> Text -> IO (Either TPTPError (b, TPTPState))
+parseText s t = case readTPTP t of
+                  Left e -> return $ Left e
+                  Right units -> translate s units
 
-parseHandle :: FormulaSig a b -> Handle -> IO (b, TPTPState)
+parseHandle :: FormulaSig a b -> Handle -> IO (Either TPTPError (b, TPTPState))
 parseHandle s h = Data.Text.IO.hGetContents h >>= parseText s
 
-parseFile :: FormulaSig a b -> FilePath -> IO (b, TPTPState)
+parseFile :: FormulaSig a b -> FilePath -> IO (Either TPTPError (b, TPTPState))
 parseFile s p = withFile p ReadMode (parseHandle s)
 
 --------------------------------------------------------------------------------------
 
-readTPTP :: Text -> [Unit]
+readTPTP :: Text -> Either TPTPError [Unit]
 readTPTP txt = case parseTPTPOnly txt of
-                 Right tptp -> units tptp
-                 Left s -> error ("cannot parse file: " ++ s)
+                 Right tptp -> Right $ units tptp
+                 Left s -> Left ("cannot parse file: " ++ s)
 
-translate :: FormulaSig a b -> [Unit] -> IO (b, TPTPState)
+translate :: FormulaSig a b -> [Unit] -> IO (Either TPTPError (b, TPTPState))
 translate s units = do
-  units' <- flattenUnits units
-  let axioms = mapM (translateUnit s) (filter (not . isConj) units')
-  let conjectures = mapM (translateUnit s) (filter isConj units')
-  let result = do
-        l1 <- axioms
-        l2 <- conjectures
-        case l2 of
-          [] -> error "no conjectures found"
-          h:t -> return (tAssume s l1 (foldl' (tAnd s) h t))
-  return $ runTranslator (tMinSymbol s) result
-    where
-      isConj (Unit _ (Formula (Standard Conjecture) _) _) = True
-      isConj _ = False
+  u <- flattenUnits units
+  case u of
+    Left e -> return $ Left e
+    Right units' -> do
+      let axioms = mapM (translateUnit s) (filter (not . isConj) units')
+      let conjectures = mapM (translateUnit s) (filter isConj units')
+      let result = do
+            l1 <- axioms
+            l2 <- conjectures
+            case l2 of
+              [] -> error "no conjectures found"
+              h:t -> return (tAssume s l1 (foldl' (tAnd s) h t))
+      return $ runTranslator (tMinSymbol s) result
+        where
+          isConj (Unit _ (Formula (Standard Conjecture) _) _) = True
+          isConj _ = False
 
-flattenUnits :: [Unit] -> IO [Unit]
-flattenUnits l = mapM flattenUnit l <&> concat
+flattenUnits :: [Unit] -> IO (Either TPTPError [Unit])
+flattenUnits l = do
+  us <- mapM flattenUnit l
+  if any isLeft us then
+    return $ Left $ head $ map (fromLeft "") us
+  else
+    return $ Right $ concatMap (fromRight []) us
 
-flattenUnit :: Unit -> IO [Unit]
-flattenUnit u@Unit {} = return [u]
+flattenUnit :: Unit -> IO (Either TPTPError [Unit])
+flattenUnit u@Unit {} = return $ Right [u]
 flattenUnit (Include (Atom txt) Nothing) = withFile (unpack txt) ReadMode act
     where
-      act = flattenUnits <=< (fmap readTPTP . Data.Text.IO.hGetContents)
+      act h = do
+        u <- readTPTP <$> Data.Text.IO.hGetContents h
+        case u of
+          Left e -> return $ Left e
+          Right units -> flattenUnits units
 flattenUnit (Include _ (Just _)) =
-    error "unsupported include statement"
+    return $ Left "unsupported include statement"
 
 --------------------------------------------------------------------------------------
 
-type Translator = State TPTPState
+type Translator = ExceptT TPTPError (State TPTPState)
 
-runTranslator :: Int -> Translator a -> (a, TPTPState)
-runTranslator n tr = runState tr (TPTPState n HashMap.empty HashMap.empty)
+runTranslator :: Int -> Translator a -> Either TPTPError (a, TPTPState)
+runTranslator n tr =
+  case runState (runExceptT tr) (TPTPState n HashMap.empty HashMap.empty) of
+    (Left e, _) -> Left e
+    (Right a, s) -> Right (a, s)
 
 getIdent :: Translator Int
 getIdent = do
@@ -130,7 +150,7 @@ data Vars = Vars {
 translateUnit :: FormulaSig a b -> Unit -> Translator b
 translateUnit s (Unit (Left (Atom _)) (Formula (Standard _) (FOF formula)) _) =
     translateFormula s (Vars 0 HashMap.empty) formula
-translateUnit _ _ = error "unsupported declaration"
+translateUnit _ _ = throwError "unsupported declaration"
 
 translateFormula :: FormulaSig a b -> Vars -> UnsortedFirstOrder -> Translator b
 translateFormula s _ (Atomic (Predicate (Reserved (Standard Tautology)) _)) =
@@ -162,7 +182,7 @@ translateFormula s v (Quantified quant nlst body) = do
            }
   b <- translateFormula s v' body
   return (q vs' b)
-translateFormula _ _ _ = error "unsupported formula"
+translateFormula _ _ _ = throwError "unsupported formula"
 
 translateConnective :: FormulaSig a b -> Vars -> Connective ->
                        UnsortedFirstOrder -> UnsortedFirstOrder -> Translator b
@@ -213,8 +233,8 @@ translateTerm s v (Variable (Var txt)) =
     let name = unpack txt in
     case HashMap.lookup name (vars v) of
       Just n -> return (tVar s name n)
-      Nothing -> error "ubound variable"
-translateTerm _ _ _ = error "unsupported term"
+      Nothing -> throwError "unbound variable"
+translateTerm _ _ _ = throwError "unsupported term"
 
 translateFunc :: FormulaSig a b -> Vars -> String -> Int -> [Term] -> Translator a
 translateFunc s v name n args = do
