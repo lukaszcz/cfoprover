@@ -66,11 +66,11 @@ data PFormula
   | PExists String Formula PFormula
 
 instance Substitutable CElims where
-  nsubst n env (Elims k es) = Elims k (map (nsubst n env) es)
+  nsubst n env (Elims k es) = Elims k (map (nsubst (n + k) env) es)
   nsubst n env (ECase k es i a eas b ebs cs) =
     ECase
       k
-      (map (nsubst n env) es)
+      (map (nsubst (n + k) env) es)
       i
       (nsubst (n + k) env a)
       (map (nsubst (n + k) env) eas)
@@ -81,7 +81,7 @@ instance Substitutable CElims where
     EEx
       s
       k
-      (map (nsubst n env) es)
+      (map (nsubst (n + k) env) es)
       (nsubst (n + k + 1) env a)
       (map (nsubst (n + k + 1) env) eas)
       (nsubst (n + k + 1) env cs)

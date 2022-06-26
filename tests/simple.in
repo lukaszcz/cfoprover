@@ -55,3 +55,5 @@ forall a forall b forall x (In(x, sum(a, b)) <-> In(x, a) \/ In(x, b)) /\ forall
 forall a forall b forall x (In(x, sum(a, b)) <-> In(x, a) \/ In(x, b)) -> forall a forall b (Seteq(a, b) <-> Subset(a, b) /\ Subset(b, a)) -> forall a forall b (Subset(a, b) <-> forall x (In(x, a) -> In(x, b))) -> forall a Seteq(a, sum(a, a))
 forall x (P(x) -> R(x) \/ exists y Q(x,y)) -> forall x (R(x) -> ~exists x P(x)) -> exists x P(x) -> exists x exists y Q(x,y)
 forall x exists y (P(x,y) /\ P(y,y)) -> exists z P(z,z)
+exists x forall y (R(a) -> forall x (R(x) -> Q) -> Q)
+exists x forall y (R(a) -> forall x (P(x) -> R(x)) -> forall x (R(x) -> P(x) -> Q) -> P(x) -> Q)

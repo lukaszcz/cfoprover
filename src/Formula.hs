@@ -311,6 +311,17 @@ getSymbol s = do
     Just id -> return $ Symbol s id
     Nothing -> newSymbol s
 
+withNewSymbol :: String -> (Symbol -> ReadMonad a) -> ReadMonad a
+withNewSymbol s f = do
+  rs <- get
+  let id = rSymId rs
+  put rs {rSyms = HashMap.insert s id (rSyms rs), rSymId = id + 1}
+  r <- f (Symbol s id)
+  case HashMap.lookup s (rSyms rs) of
+    Just id' -> state (\rs' -> ((), rs'{rSyms = HashMap.insert s id' (rSyms rs')}))
+    Nothing -> return ()
+  return r
+
 skipWhitespace :: Input -> Input
 skipWhitespace ((l, _), '\n' : s) = skipWhitespace ((l+1, 0), s)
 skipWhitespace ((l, n), c : s) | isSpace c = skipWhitespace ((l, n+1), s)
@@ -396,15 +407,15 @@ readNegQuant s =
   where
     go q s1 =
       case readLexeme s1 of
-        Just (x, s2) -> do
-          sym <- newSymbol x
-          case readLexeme s2 of
-            Just (".", s3) -> do
-              (r, s4) <- readFormula' s3
-              return (q x (abstract sym r), s4)
-            _ -> do
-              (r, s3) <- readNegQuant s2
-              return (q x (abstract sym r), s3)
+        Just (x, s2) ->
+          withNewSymbol x $ \sym -> do
+            case readLexeme s2 of
+              Just (".", s3) -> do
+                (r, s4) <- readFormula' s3
+                return (q x (abstract sym r), s4)
+              _ -> do
+                (r, s3) <- readNegQuant s2
+                return (q x (abstract sym r), s3)
         _ -> readError "expected variable name" s1
 
 readConjunction :: Input -> ReadMonad (Formula, Input)
