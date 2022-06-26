@@ -88,7 +88,7 @@ instance Substitutable CElims where
 
 instance Substitutable Eliminator where
   nsubst n env e =
-    e{  target = nsubst n env (target e)
+    e{  target = nsubst (n + bindersNum e) env (target e)
       , elims = nsubst n env (elims e) }
 
 instance Substitutable PFormula where
@@ -430,10 +430,9 @@ unifyAtoms _ _ = empty
 generateTerm :: Int -> ProofMonad p Term
 generateTerm n = do
   params <- getParams
-  if IntSet.null params then
-    return (tfun (Symbol "_c" (-1)) []) <|> cont
-  else
-    IntSet.foldl' (\a c -> return (tfun (Symbol ("_c" ++ show c) c) []) <|> a) cont params
+  IntSet.foldl' (\a c -> return (tfun (Symbol ("_c" ++ show c) c) []) <|> a)
+    (return (tfun (Symbol "_c" (-1)) []) <|> cont)
+    params
   where
     cont =
       if n == 0 then
@@ -449,7 +448,7 @@ generateTerm n = do
             return (tfun s args) <|> a
 
 resolveTermEVars :: Int -> Term -> ProofMonad p ()
-resolveTermEVars n t = lift (U.getFreeVars t) >>= resolveEVars n
+resolveTermEVars n t = lift (U.getFreeVars t) >>= \v -> resolveEVars n v
   where
     resolveEVars n = mapM_ (\v -> generateTerm n >>= \t -> lift $ U.bindVar v t)
 
@@ -681,10 +680,12 @@ createEVars (EEx str k _ _ _ ces) = do
 
 applyElim :: Proof p => Options -> Int -> [Atom] -> Symbol -> Eliminator -> Atom ->
   ProofMonad p (IntSet, DList Term, Int, p)
-applyElim opts n visited s e a = do
-  vs <- mapM (lift . U.getFreeVars) (snd a)
-  -- this is not entirely correct because 'e' might also contain evars
-  if null vs then once cont else cont
+applyElim opts n visited s e a =
+  if optComplete opts then
+    cont
+  else do
+    vs <- mapM (lift . U.getFreeVars) (snd a)
+    if null vs then once cont else cont
   where
     cont = do
       (env, params) <- createEVars (elims e)

@@ -45,13 +45,19 @@ data Options = Options
   , interactive :: Bool
   , produceProof :: Bool
   , measureTime :: Bool
+  , complete :: Bool
   , fileName :: String
   }
+
+createSearchOptions :: Options -> Search.Options
+createSearchOptions opts = Search.defaultOptions {
+  Search.optComplete = complete opts
+}
 
 doSearch :: Options -> Formula -> IO ()
 doSearch opts phi = (if measureTime opts then timeIt else id) $ do
   if produceProof opts then
-    case Search.searchIter Search.defaultOptions sig phi :: [PTerm] of
+    case Search.searchIter (createSearchOptions opts) sig phi :: [PTerm] of
       [] -> putStrLn "failure"
       x:_ -> print x
   else
@@ -116,6 +122,7 @@ main = do
                             switch (short 'i' <> long "interactive") <*>
                             switch (short 'p' <> long "proof") <*>
                             switch (short 't' <> long "time") <*>
+                            switch (short 'c' <> long "complete") <*>
                             argument str (metavar "FILE" <> value ""))
                             empty
   if interactive opts then

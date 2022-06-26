@@ -1,0 +1,1 @@
+exists x forall y (R(y) -> forall x (P(x) -> R(x)) -> forall x (R(x) -> P(x) -> Q) -> P(x) -> Q)
