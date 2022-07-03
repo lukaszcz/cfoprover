@@ -15,6 +15,8 @@ import Data.HashMap.Strict (HashMap)
 import qualified Data.HashMap.Strict as HashMap
 import Data.IntMap.Strict (IntMap)
 import qualified Data.IntMap.Strict as IntMap
+import Data.IntSet (IntSet)
+import qualified Data.IntSet as IntSet
 import Data.List as List
 import Data.List.Extras.Pair
 import GHC.Generics
@@ -51,6 +53,10 @@ varOccurs :: Int -> Term -> Bool
 varOccurs n (UTerm (Var m)) = n == m
 varOccurs n (UTerm (Fun _ args)) = any (varOccurs n) args
 varOccurs _ _ = False
+
+extractSyms :: Term -> IntSet -> IntSet
+extractSyms (UTerm (Fun s args)) su = foldl' (flip extractSyms) (IntSet.insert (sid s) su) args
+extractSyms _ su = su
 
 instance Eq Term where
   UVar v1 == UVar v2 = v1 == v2
@@ -91,6 +97,14 @@ mapAtomsM f = mapAtoms' f 0 []
 
 mapAtoms :: (Int -> [String] -> Atom -> Atom) -> Formula -> Formula
 mapAtoms f a = runIdentity $ mapAtomsM (\n env x -> return (f n env x)) a
+
+foldAtoms :: (Atom -> a -> a) -> a -> Formula -> a
+foldAtoms f acc (Atom a) = f a acc
+foldAtoms f acc (Impl x y) = foldAtoms f (foldAtoms f acc y) x
+foldAtoms f acc (And x y) = foldAtoms f (foldAtoms f acc y) x
+foldAtoms f acc (Or x y) = foldAtoms f (foldAtoms f acc y) x
+foldAtoms f acc (Forall _ x) = foldAtoms f acc x
+foldAtoms f acc (Exists _ x) = foldAtoms f acc x
 
 atomEquals :: BindingMonad TermF IntVar m => Atom -> Atom -> m Bool
 atomEquals (s1, args1) (s2, args2) | s1 == s2 = and <$> zipWithM equals args1 args2

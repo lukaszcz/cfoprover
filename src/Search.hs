@@ -30,14 +30,16 @@ import Formula
 data Options = Options {
     optComplete :: Bool
   , optMemoizeThreshold :: Int
-  , optMemoizeGenThreshold :: Int
+  , optMemGen :: Bool
+  , optMemGenMaxSymbols :: Int
 }
 
 defaultOptions :: Options
 defaultOptions = Options {
     optComplete = False
   , optMemoizeThreshold = 100
-  , optMemoizeGenThreshold = 200
+  , optMemGen = True
+  , optMemGenMaxSymbols = 10
 }
 
 {------------------------------------}
@@ -126,6 +128,13 @@ compileImplElims phi =
   map (\e -> e{ elims = prependElim (EApp (compileFormula phi)) (elims e)
               , cost = cost e + 10 })
 
+compileForallElims :: [Eliminator] -> [Eliminator]
+compileForallElims =
+  map (\e -> e{ elims = prependForallElim (elims e)
+              , bindersNum = bindersNum e + 1
+              , cost = cost e
+                  + if any (varOccurs (bindersNum e)) (snd (target e)) then 1 else 5 })
+
 compileElims :: Formula -> [Eliminator]
 compileElims (Atom a) = compileAtomElims a
 compileElims (Impl a b) = compileImplElims a (compileElims b)
@@ -143,12 +152,7 @@ compileElims (Or a b) =
   where
     eas = compileElims a
     ebs = compileElims b
-compileElims (Forall _ a) =
-  map (\e -> e{ elims = prependForallElim (elims e)
-              , bindersNum = bindersNum e + 1
-              , cost = cost e
-                  + if any (varOccurs (bindersNum e)) (snd (target e)) then 1 else 5 })
-    (compileElims a)
+compileElims (Forall _ a) = compileForallElims (compileElims a)
 compileElims (Exists s a) =
   map (\e -> e {elims = EEx s 0 [] a eas (elims e), bindersNum = bindersNum e + 1}) eas
   where
@@ -170,13 +174,15 @@ instance Show PFormula where
 
 data Context = Context {
       -- 'cElims' maps target head symbol ids to:
-      -- (context variable symbol, depth of variable, eliminator)
+      -- (context variable symbol, eliminator)
       cElims :: IntMap [(Symbol,Eliminator)]
       -- 'cParams' contains symbol ids of the parameters in the context
     , cParams :: IntSet
       -- 'cFormulas' contains the formulas in the context (from which the
       -- eliminators are created)
     , cFormulas :: HashSet Formula
+      -- 'cDecls' maps context variable symbol ids to the declarations
+    , cDecls :: IntMap (Symbol, Formula)
       -- invariant: formulas and eliminators in a context contain no free term
       -- variables (but may contain uninstantiated evars)
     }
@@ -184,10 +190,11 @@ data Context = Context {
 emptyContext :: Context
 emptyContext = Context{ cElims = IntMap.empty
                       , cParams = IntSet.empty
-                      , cFormulas = HashSet.empty }
+                      , cFormulas = HashSet.empty
+                      , cDecls = IntMap.empty }
 
-type Spine p = p -> p
 {- given a proof for the spine hole, returns a complete proof term -}
+type Spine p = p -> p
 
 emptySpine :: Spine p
 emptySpine = id
@@ -197,10 +204,10 @@ data ProofState p = ProofState {
     , goals :: [PFormula]
     , spines :: [Spine p]
     , caseAtoms :: [HashSet (Symbol, Atom)]
-    , depthMaps :: [IntMap Int]
     -- depthMaps: maps symbols to depths at which they were introduced
-    , contextDepth :: Int
+    , depthMaps :: [IntMap Int]
     -- contextDepth = length contexts
+    , contextDepth :: Int
     , freeSymbolId :: Int
     , signature :: Signature
     }
@@ -252,10 +259,6 @@ failDepth = lift $ lift $ failE True
 nextEVar :: ProofMonad p Term
 nextEVar = U.UVar <$> lift U.freeVar
 
-lookup :: Symbol -> Context -> [(Symbol,Eliminator)]
-lookup s ctx =
-    fromMaybe [] (IntMap.lookup (sid s) (cElims ctx))
-
 getContexts :: ProofMonad p [Context]
 getContexts = get <&> contexts
 
@@ -286,23 +289,24 @@ findElims' (pred, _) ctxs =
   sortBy (\x y -> compare (cost (snd x)) (cost (snd y))) $
   concat $
   zipWith (\c -> map (\(s,e) -> (s,e{cost = cost e + c}))) [0,5..] $
-  map (Search.lookup pred) ctxs
+  map (fromMaybe [] . IntMap.lookup (sid pred) . cElims) ctxs
 
 findElims :: Atom -> ProofMonad p [(Symbol,Eliminator)]
 findElims a = getContexts <&> findElims' a
 
-addElims' :: Symbol -> [Eliminator] -> Context -> Context
-addElims' s es ctx = ctx{cElims = elims'}
+addElims' :: Symbol -> Formula -> [Eliminator] -> Context -> Context
+addElims' s phi es ctx = ctx{cElims = elims', cDecls = decls'}
   where
     elims' = foldr (\e -> IntMap.insertWith (++) (sid $ fst (target e)) [(s,e)])
                     (cElims ctx)
                     es
+    decls' = IntMap.insert (sid s) (s, phi) (cDecls ctx)
 
-addElims :: Symbol -> [Eliminator] -> ProofMonad p ()
-addElims s elims = do
+addElims :: Symbol -> Formula -> [Eliminator] -> ProofMonad p ()
+addElims s phi elims = do
   ps <- get
   let (ctx:cs) = contexts ps
-  put ps{ contexts = addElims' s elims ctx : cs
+  put ps{ contexts = addElims' s phi elims ctx : cs
         , depthMaps =
           IntMap.insert (sid s) (contextDepth ps) (head (depthMaps ps)) : tail (depthMaps ps) }
 
@@ -319,6 +323,18 @@ addParam s = do
 
 getParams :: ProofMonad p IntSet
 getParams = IntSet.unions . map cParams <$> getContexts
+
+findDecls :: IntSet -> ProofMonad p [(Symbol, Formula)]
+findDecls su = do
+  ctxs <- getContexts
+  return $ IntSet.foldl' (addDecl ctxs) [] su
+  where
+    addDecl ctxs a sid =
+      foldl' (\a ctx -> case IntMap.lookup sid (cDecls ctx) of
+                          Just x -> x : a
+                          Nothing -> a)
+            a
+            ctxs
 
 pushContext :: ProofMonad p ()
 pushContext = do
@@ -452,6 +468,7 @@ resolveTermEVars n t = lift (U.getFreeVars t) >>= \v -> resolveEVars n v
   where
     resolveEVars n = mapM_ (\v -> generateTerm n >>= \t -> lift $ U.bindVar v t)
 
+-- returns the set of all symbols occurring in the terms
 checkParams :: Traversable t => t Term -> ProofMonad p IntSet
 checkParams ts = do
   ts' <- U.applyBindingsAll ts
@@ -471,11 +488,67 @@ checkParams ts = do
               args
     checkParamsInTerm _ _ = error "checkParamsInTerm"
 
+getMaxDepth :: IntSet -> ProofMonad p Int
+getMaxDepth su = do
+  mp <- getDepthMap
+  return $ IntSet.foldl' (\a x -> max a (fromMaybe 0 (IntMap.lookup x mp))) 1 su
+
+{--------------------------------------------------------------------------------}
+{- proof memoization -}
+
+memoizeProof :: Proof p => Options -> Atom -> IntSet -> DList Term -> p -> ProofMonad p (IntSet, DList Term, Int, p)
+memoizeProof opts a su ts p = do
+  sut <- checkParams ts
+  let su' = IntSet.union su sut
+  d <- getMaxDepth su'
+  if d > 1 && optMemGen opts then do
+    decls <- findDecls su'
+    mp <- getDepthMap
+    let decls' = filter (\(s,_) -> fromMaybe maxInt (IntMap.lookup (sid s) mp) > 1) decls
+    if length decls' <= optMemGenMaxSymbols opts then do
+      -- get evars in decls
+      vs <- foldl' (\acc (_, phi) -> foldAtoms (\a acc -> liftA2 (++) (lift $ U.getFreeVarsAll (snd a)) acc) acc phi) (pure []) decls'
+      if null vs then do
+        -- get ids of symbols in decls
+        sut' <- foldl'
+              (\acc (_, phi) ->
+                foldAtoms
+                  (\a acc -> acc >>= \su -> U.applyBindingsAll (snd a) >>= \args ->
+                    return $ foldl' (flip extractSyms) (IntSet.insert (sid (fst a)) su) args)
+                  acc phi)
+              (return IntSet.empty)
+              decls'
+        let su'' = IntSet.union su' sut'
+        params <- IntSet.intersection su'' <$> getParams
+        let params' = IntSet.filter (\id -> fromMaybe maxInt (IntMap.lookup id mp) > 1) params
+        let p' = IntSet.foldl' (\p sid -> mkALam (Symbol "" sid) p) (foldl' (\p (s, phi) -> mkLam s phi p) p decls') params'
+        let phi' = IntSet.foldl' (\a sid -> Forall "" (abstract (Symbol "" sid) a)) (foldl' (\a (_, phi) -> Impl phi a) (Atom a) decls') params'
+        let es' = IntSet.foldl' (\es _ -> compileForallElims es) (foldl' (\es (_, phi) -> compileImplElims phi es) (compileAtomElims a) decls') params'
+        s <- withSubgoal 1 (\_ -> insertElims p' phi' es')
+        let p'' = foldr (\(s, _) p -> mkApp p (mkVar s)) (IntSet.foldr (\sid p -> mkAApp p (tfun (Symbol "" sid) [])) (mkVar s) params') decls'
+        return (IntSet.singleton (sid s), DList.empty, 1 + length decls', p'')
+      else
+        cont d
+    else
+      cont d
+  else
+    cont d
+  where
+    cont d = do
+      let elims = compileAtomElims a
+      s <- withSubgoal d (\_ -> insertElims p (Atom a) elims)
+      return (IntSet.singleton (sid s), DList.empty, 1, mkVar s)
+    insertElims p phi elims = do
+      s <- nextSymbol
+      updateSpine (\sp p' -> sp (mkApp (mkLam s phi p') p))
+      addElims s phi elims
+      return s
+
 {--------------------------------------------------------------------------------}
 {- search -}
 
 {- search limit (argument to search') should not be confused with context depth -}
-{- search' limit visitedGoalAtoms env formula = (symbolsUsed, terms (evars), proof size, proof) -}
+{- search' limit visitedGoalAtoms env formula = (unbound symbols used, terms (evars), proof size, proof) -}
 search' :: Proof p => Options -> Int -> [Atom] -> [Term] -> PFormula ->
   ProofMonad p (IntSet, DList Term, Int, p)
 search' _ 0 _ _ _ = failDepth
@@ -520,18 +593,20 @@ intros opts n env a = do
   popContext
   return (IntSet.difference
               (IntSet.difference (IntSet.union su sut)
-                    (IntMap.keysSet (cElims ctx)))
+                    (IntMap.keysSet (cDecls ctx)))
               (cParams ctx)
           , DList.empty, sz, p)
 
 intros' :: Proof p => Options -> Int -> [Term] -> PFormula ->
   ProofMonad p (IntSet, DList Term, Int, p)
 intros' opts n env (PImpl (phi, elims) a) = do
-  b <- addToContext (subst env phi)
+  let phi' = subst env phi
+  b <- addToContext phi'
   if b then do
     s <- nextSymbol
-    addElims s (map (subst env) elims)
-    updateSpine (\sp p -> sp (mkLam s (subst env phi) p))
+    let elims' = map (subst env) elims
+    addElims s phi' elims'
+    updateSpine (\sp p -> sp (mkLam s phi' p))
     intros' opts n env a
   else
     intros' opts n env a
@@ -574,28 +649,6 @@ searchAfterIntros opts n env ga@(PAtom a) = do
     apElim (s, e) acc = applyElim opts (n - 1) [] s e (subst env a) <|> acc
 searchAfterIntros opts n env g = search' opts n [] env g <|> searchExFalso opts n (subst env g)
 
-applyElims :: Proof p => Options -> Int -> [Atom] -> [Term] -> Symbol -> [Elim PFormula] ->
-  ProofMonad p (IntSet, DList Term, Int, p)
-applyElims opts n visited env s es = do
-  (sus, ts, sz, ps) <- foldr (search_subgoal . subst env) (return ([], DList.empty, 0, [])) es
-  return (IntSet.insert (sid s) (IntSet.unions sus), ts, sz + 1, mkElim s ps)
-  where
-    search_subgoal (EApp x) a = do
-      (su, ts, sz1, p) <- search' opts n visited [] x
-      (sus, ts', sz2, ps) <- a
-      return (su : sus, DList.append ts ts', sz1 + sz2, EApp p : ps)
-    search_subgoal (EAApp t) a = do
-      (sus, ts, sz, ps) <- a
-      return (sus, DList.cons t ts, sz + 1, EAApp t : ps)
-    search_subgoal (EProj i) a = do
-      (sus, ts, sz, ps) <- a
-      return (sus, ts, sz, EProj i : ps)
-
-getMaxDepth :: IntSet -> ProofMonad p Int
-getMaxDepth su = do
-  mp <- getDepthMap
-  return $ IntSet.foldl' (\a x -> max a (fromMaybe 0 (IntMap.lookup x mp))) 0 su
-
 fixApplyElims :: Proof p => Options -> Int -> [Atom] -> [Term] -> Int -> Symbol -> [Elim PFormula]
   -> ProofMonad p ([Term], [Term], Int, p)
 fixApplyElims opts n visited env k s es = do
@@ -608,19 +661,22 @@ fixApplyElims opts n visited env k s es = do
   d <- getMaxDepth su'
   return (env0, env', d, p)
 
-memoizeProof :: Proof p => Atom -> IntSet -> DList Term -> p -> ProofMonad p (IntSet, DList Term, Int, p)
-memoizeProof a su ts p = do
-  sut <- checkParams ts
-  let su' = IntSet.union su sut
-  d <- getMaxDepth su'
-  s <- withSubgoal d insertElim
-  return (IntSet.singleton (sid s), DList.empty, 0, mkVar s)
+applyElims :: Proof p => Options -> Int -> [Atom] -> [Term] -> Symbol -> [Elim PFormula] ->
+  ProofMonad p (IntSet, DList Term, Int, p)
+applyElims opts n visited env s es = do
+  (sus, ts, sz, ps) <- foldr (search_subgoal . subst env) (return ([], DList.empty, 1, [])) es
+  return (IntSet.insert (sid s) (IntSet.unions sus), ts, sz, mkElim s ps)
   where
-    insertElim _ = do
-      s <- nextSymbol
-      updateSpine (\sp p' -> sp (mkApp (mkLam s (Atom a) p') p))
-      addElims s (compileAtomElims a)
-      return s
+    search_subgoal (EApp x) a = do
+      (su, ts, sz1, p) <- search' opts n visited [] x
+      (sus, ts', sz2, ps) <- a
+      return (su : sus, DList.append ts ts', sz1 + sz2, EApp p : ps)
+    search_subgoal (EAApp t) a = do
+      (sus, ts, sz, ps) <- a
+      return (sus, DList.cons t ts, sz + 1, EAApp t : ps)
+    search_subgoal (EProj i) a = do
+      (sus, ts, sz, ps) <- a
+      return (sus, ts, sz, EProj i : ps)
 
 applyCElims :: Proof p => Options -> Atom -> Int -> [Atom] -> [Term] -> [Symbol] -> Symbol -> CElims ->
   ProofMonad p (IntSet, DList Term, Int, p)
@@ -629,7 +685,7 @@ applyCElims opts a n visited env _ s (Elims _ es) = do
   if sz > optMemoizeThreshold opts then do
     vs <- lift $ U.getFreeVarsAll ts
     if null vs then
-      memoizeProof a su ts p
+      ifte (memoizeProof opts a su ts p) return (return (su, ts, sz, p))
     else
       return (su, ts, sz, p)
   else
@@ -643,24 +699,26 @@ applyCElims opts a n visited env params s (ECase k es idx phi1 es1 phi2 es2 ces)
       checkCase s a
       (_, _, _, pg) <- search' opts n [] [] (PImpl (subst env0 phi2, map (subst env0) es2) g)
       s' <- nextSymbol
+      let phi1' = subst env0 phi1
       updateSpine (\sp p' ->
         case idx of
-          ILeft -> sp (mkCase p (mkLam s' (subst env0 phi1) p') pg)
-          IRight -> sp (mkCase p pg (mkLam s' (subst env0 phi1) p')))
-      addElims s' (map (subst env0) es1)
+          ILeft -> sp (mkCase p (mkLam s' phi1' p') pg)
+          IRight -> sp (mkCase p pg (mkLam s' phi1' p')))
+      addElims s' phi1' (map (subst env0) es1)
       return s'
 applyCElims opts a n visited env params s (EEx _ k es phi eas ces) = do
   (env0, env', d, p) <- fixApplyElims opts n visited env k s es
   let sa = head params
   let env0' = tfun sa [] : env0
-  s' <- withSubgoal d (insertExElim sa env0' p)
-  addElims s' (map (subst env0') eas)
+  let phi' = subst env0' phi
+  s' <- withSubgoal d (insertExElim sa phi' p)
+  addElims s' phi' (map (subst env0') eas)
   applyCElims opts a n visited (tail env') (tail params) s' (subst env0' ces)
   where
-    insertExElim sa env0' p _ = do
+    insertExElim sa phi' p _ = do
       s' <- nextSymbol
       updateSpine (\sp p' ->
-        sp (mkExElim p (mkALam sa (mkLam s' (subst env0' phi) p'))))
+        sp (mkExElim p (mkALam sa (mkLam s' phi' p'))))
       addParam sa
       return s'
 
