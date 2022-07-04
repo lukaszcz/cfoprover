@@ -61,7 +61,7 @@ doSearch opts phi = (if measureTime opts then timeIt else id) $ do
       [] -> putStrLn "failure"
       x:_ -> print x
   else
-    case Search.searchIter Search.defaultOptions sig phi :: [()] of
+    case Search.searchIter (createSearchOptions opts) sig phi :: [()] of
       [] -> putStrLn "failure"
       _ -> putStrLn "success"
   where

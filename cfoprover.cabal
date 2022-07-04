@@ -1,4 +1,4 @@
-cabal-version:       2.0
+cabal-version:       2.2
 
 name:                cfoprover
 version:             0.1.0.0
@@ -13,23 +13,40 @@ copyright:           Lukasz Czajka
 -- category:
 build-type:          Simple
 
+common shared
+  ghc-options:        -W -Werror -Wno-unused-top-binds -O2
+  build-depends:      base >= 4.12
+  default-language:   Haskell2010
+
+library cfoprover-lib
+  import:             shared
+  build-depends:      list-extras,
+                      hashable,
+                      unification-fd,
+                      logict,
+                      containers,
+                      unordered-containers,
+                      dlist,
+                      mtl
+  exposed-modules:    Formula Search
+  hs-source-dirs:     src/lib
+
 executable cfoprover
-  main-is:             Main.hs
-  other-modules:       TPTP Formula Search
-  -- other-extensions:
-  ghc-options:         -W -Werror -Wno-unused-top-binds -O2
-  build-depends:       base >=4.12,
-                       optparse-simple,
-                       timeit,
-                       list-extras,
-                       hashable,
-                       unification-fd,
-                       logict,
-                       containers,
-                       unordered-containers,
-                       dlist,
-                       mtl,
-                       text,
-                       tptp
-  hs-source-dirs:      src
-  default-language:    Haskell2010
+  import:             shared
+  main-is:            Main.hs
+  other-modules:      TPTP
+  build-depends:      mtl,
+                      unordered-containers,
+                      optparse-simple,
+                      timeit,
+                      text,
+                      tptp,
+                      cfoprover-lib
+  hs-source-dirs:     src
+
+test-suite cfoprover-tests
+  import:             shared
+  type:               exitcode-stdio-1.0
+  main-is:            Main.hs
+  build-depends:      base, HUnit, cfoprover-lib
+  hs-source-dirs:     test
