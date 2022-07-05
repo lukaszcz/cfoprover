@@ -682,8 +682,14 @@ infer' env (Proj i t) = do
 infer' env (Inj i a t) = do
   b <- infer' env t
   case i of
-    ILeft -> return (Or b a)
-    IRight -> return (Or a b)
+    ILeft ->
+      case a of
+        Or b' _ | b == b' -> return a
+        _ -> Nothing
+    IRight ->
+      case a of
+        Or _ b' | b == b' -> return a
+        _ -> Nothing
 infer' env (Case t0 t1 t2) = do
   a <- infer' env t0
   case a of
@@ -703,10 +709,10 @@ infer' env (AApp t tt) = do
   case a of
     Forall _ a' -> return $ subst [tt] a'
     _ -> Nothing
-infer' env (ExIntro a0@(Exists _ a) tt t) = do
+infer' env (ExIntro phi@(Exists _ a) tt t) = do
   a' <- infer' env t
   guard $ subst [tt] a == a'
-  return a0
+  return phi
 infer' _ ExIntro {} = Nothing
 infer' env (ExElim t t') = do
   a <- infer' env t

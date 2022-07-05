@@ -63,9 +63,9 @@ data PFormula
   = PAtom Atom
   | PImpl (Formula, [Eliminator]) PFormula
   | PAnd PFormula PFormula
-  | POr Formula PFormula PFormula
+  | POr Formula PFormula PFormula -- the first argument is the original disjunction
   | PForall String PFormula
-  | PExists String Formula PFormula
+  | PExists String Formula PFormula -- the second argument is the original existential
 
 instance Substitutable CElims where
   nsubst n env (Elims k es) = Elims k (map (nsubst (n + k) env) es)
@@ -118,7 +118,7 @@ compileFormula (Impl a b) = PImpl (a, compileElims a) (compileFormula b)
 compileFormula (And a b) = PAnd (compileFormula a) (compileFormula b)
 compileFormula phi@(Or a b) = POr phi (compileFormula a) (compileFormula b)
 compileFormula (Forall s a) = PForall s (compileFormula a)
-compileFormula (Exists s a) = PExists s a (compileFormula a)
+compileFormula phi@(Exists s a) = PExists s phi (compileFormula a)
 
 compileAtomElims :: Atom -> [Eliminator]
 compileAtomElims a = [Eliminator {target = a, elims = Elims 0 [], bindersNum = 0, cost = 0}]
