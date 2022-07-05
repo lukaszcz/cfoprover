@@ -110,6 +110,9 @@ atomEquals :: BindingMonad TermF IntVar m => Atom -> Atom -> m Bool
 atomEquals (s1, args1) (s2, args2) | s1 == s2 = and <$> zipWithM equals args1 args2
 atomEquals _ _ = return False
 
+mapTermsInFormula :: Monad m => (Term -> m Term) -> Formula -> m Formula
+mapTermsInFormula f = mapAtomsM (\_ _ (s,args) -> mapM f args >>= \args' -> pure (s, args'))
+
 data Signature = Signature
   { functionSymbols :: [Symbol],
     predicateSymbols :: [Symbol],
@@ -552,17 +555,17 @@ data PTerm
 
 mapTerms :: Monad m => (Term -> m Term) -> PTerm -> m PTerm
 mapTerms _ x@(PVar _) = pure x
-mapTerms f (Lambda s phi x) = (Lambda s <$> mapAtomsM (\_ _ (s,args) -> mapM f args >>= \args' -> pure (s, args')) phi) <*> mapTerms f x
+mapTerms f (Lambda s phi x) = Lambda s <$> mapTermsInFormula f phi <*> mapTerms f x
 mapTerms f (App x y) = App <$> mapTerms f x <*> mapTerms f y
 mapTerms f (Conj x y) = Conj <$> mapTerms f x <*> mapTerms f y
 mapTerms f (Proj idx x) = Proj idx <$> mapTerms f x
-mapTerms f (Inj idx phi x) = Inj idx phi <$> mapTerms f x
+mapTerms f (Inj idx phi x) = Inj idx <$> mapTermsInFormula f phi <*> mapTerms f x
 mapTerms f (Case x y z) = Case <$> mapTerms f x <*> mapTerms f y <*> mapTerms f z
 mapTerms f (ALambda s x) = ALambda s <$> mapTerms f x
 mapTerms f (AApp x t) = AApp <$> mapTerms f x <*> f t
-mapTerms f (ExIntro phi t x) = ExIntro phi <$> f t <*> mapTerms f x
+mapTerms f (ExIntro phi t x) = ExIntro <$> mapTermsInFormula f phi <*> f t <*> mapTerms f x
 mapTerms f (ExElim x y) = ExElim <$> mapTerms f x <*> mapTerms f y
-mapTerms f (Exfalso phi x) = Exfalso phi <$> mapTerms f x
+mapTerms f (Exfalso phi x) = Exfalso <$> mapTermsInFormula f phi <*> mapTerms f x
 
 instance Proof PTerm where
   mkVar = PVar
