@@ -1,6 +1,6 @@
 import Test.HUnit
 
-import Formula
+import Types
 import qualified Search
 
 assertProvable :: Formula -> Assertion

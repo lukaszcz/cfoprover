@@ -1,6 +1,6 @@
 {-# LANGUAGE DeriveTraversable, DeriveGeneric, FlexibleInstances, FlexibleContexts, UnicodeSyntax #-}
 
-module Formula where
+module Types where
 
 import Control.Monad
 import Control.Monad.Except

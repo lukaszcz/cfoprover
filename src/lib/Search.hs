@@ -22,7 +22,7 @@ import Data.DList (DList)
 import qualified Data.DList as DList
 import GHC.Base (maxInt)
 
-import Formula
+import Types
 
 {------------------------------------}
 {- search options -}

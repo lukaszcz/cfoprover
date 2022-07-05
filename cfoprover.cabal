@@ -28,7 +28,7 @@ library cfoprover-lib
                       unordered-containers,
                       dlist,
                       mtl
-  exposed-modules:    Formula Search
+  exposed-modules:    Types Search
   hs-source-dirs:     src/lib
 
 executable cfoprover

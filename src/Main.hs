@@ -6,11 +6,11 @@ import System.TimeIt
 
 import qualified TPTP
 import qualified Search
-import Formula
+import Types
 
 tptpSig :: TPTP.FormulaSig Term Formula
 tptpSig = TPTP.FormulaStruct {
-          TPTP.tMinSymbol = Formula.tMinSymbol
+          TPTP.tMinSymbol = Types.tMinSymbol
         , TPTP.tVar = \_ i -> tvar i
         , TPTP.tFun = \s i args -> tfun (Symbol s i) args
         , TPTP.tPred = \s i args -> Atom (Symbol s i, args)
