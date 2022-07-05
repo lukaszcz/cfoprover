@@ -1,6 +1,7 @@
 module Main where
 
 import Options.Applicative.Simple
+import Control.Monad
 import System.IO
 import System.TimeIt
 
@@ -46,6 +47,7 @@ data Options = Options
   , produceProof :: Bool
   , measureTime :: Bool
   , complete :: Bool
+  , checkType :: Bool
   , fileName :: String
   }
 
@@ -59,7 +61,10 @@ doSearch opts phi = (if measureTime opts then timeIt else id) $ do
   if produceProof opts then
     case Search.searchIter (createSearchOptions opts) sig phi :: [PTerm] of
       [] -> putStrLn "failure"
-      x:_ -> print x
+      x:_ -> do
+        print x
+        when (checkType opts && not (check x phi)) $
+          putStrLn "typecheck failure"
   else
     case Search.searchIter (createSearchOptions opts) sig phi :: [()] of
       [] -> putStrLn "failure"
@@ -115,14 +120,15 @@ batch opts
 main :: IO ()
 main = do
   (opts,()) <- simpleOptions "0.1"
-                            "cfoprover"
-                            "An experimental connection-driven prover for intuitionistic first-order logic"
+                            "cfoProver"
+                            "An experimental connection-driven prover for intuitionistic first-order logic."
                             (Options <$>
                             switch (long "tptp") <*>
                             switch (short 'i' <> long "interactive") <*>
                             switch (short 'p' <> long "proof") <*>
                             switch (short 't' <> long "time") <*>
                             switch (short 'c' <> long "complete") <*>
+                            switch (long "typecheck") <*>
                             argument str (metavar "FILE" <> value ""))
                             empty
   if interactive opts then
