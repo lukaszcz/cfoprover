@@ -563,8 +563,10 @@ search' opts n visited env (PAtom a) = do
     a' = subst env a
 search' opts n visited env a@(PImpl (phi, _) a') = do
   b <- isInContext (subst env phi)
-  if b then
-    search' opts n visited env a'
+  if b then do
+    s <- nextSymbol
+    (su, ts, sz, p) <- search' opts n visited env a'
+    return (su, ts, sz + 1, mkLam s phi p)
   else
     intros opts n env a
 search' opts n _ env a@(PForall _ _) = intros opts n env a
@@ -616,7 +618,7 @@ intros' opts n env (PForall name a) = do
   updateSpine (\sp p -> sp (mkALam s p))
   intros' opts n (tfun s [] : env) a
 intros' opts n env x = do
-  pushGoal (subst env x) -- this should be lazy
+  pushGoal (subst env x) -- this should remain lazy
   (su, ts, sz, p) <- searchAfterIntros opts n env x
   popGoal
   sp <- getSpine
