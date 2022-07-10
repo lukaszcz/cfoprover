@@ -27,43 +27,50 @@ tptpSig = TPTP.FormulaStruct {
         , TPTP.tEx = flip (foldr Exists)
      }
 
-parseTPTPFile :: FilePath -> IO (Either String Formula)
-parseTPTPFile file = do
-  r <- TPTP.parseFile tptpSig file
+setEncoding :: Options -> Handle -> IO ()
+setEncoding opts h =
+  when (optEncoding opts /= "") $ do
+    enc <- mkTextEncoding (optEncoding opts)
+    hSetEncoding h enc
+
+parseTPTP :: Handle -> IO (Either String Formula)
+parseTPTP h = do
+  r <- TPTP.parseHandle tptpSig h
   case r of
     Left e -> return $ Left e
     Right (phi, _) -> return $ Right phi
 
-parseTPTP :: String -> IO (Either String Formula)
-parseTPTP s = do
+readTPTP :: String -> IO (Either String Formula)
+readTPTP s = do
   r <- TPTP.parse tptpSig s
   case r of
     Left e -> return $ Left e
     Right (phi, _) -> return $ Right phi
 
 data Options = Options
-  { tptp :: Bool
-  , interactive :: Bool
-  , produceProof :: Bool
-  , measureTime :: Bool
-  , complete :: Bool
-  , checkType :: Bool
-  , fileName :: String
+  { optTPTP :: Bool
+  , optInteractive :: Bool
+  , optProduceProof :: Bool
+  , optMeasureTime :: Bool
+  , optComplete :: Bool
+  , optCheckType :: Bool
+  , optEncoding :: String
+  , optFileName :: String
   }
 
 createSearchOptions :: Options -> Search.Options
 createSearchOptions opts = Search.defaultOptions {
-  Search.optComplete = complete opts
+  Search.optComplete = optComplete opts
 }
 
 doSearch :: Options -> Formula -> IO ()
-doSearch opts phi = (if measureTime opts then timeIt else id) $ do
-  if produceProof opts then
+doSearch opts phi = (if optMeasureTime opts then timeIt else id) $ do
+  if optProduceProof opts then
     case Search.searchIter (createSearchOptions opts) sig phi :: [PTerm] of
       [] -> putStrLn "failure"
       x:_ -> do
         print x
-        when (checkType opts && not (check x phi)) $
+        when (optCheckType opts && not (check x phi)) $
           putStrLn "typecheck failure"
   else
     case Search.searchIter (createSearchOptions opts) sig phi :: [()] of
@@ -81,8 +88,8 @@ repl opts = do
     return ()
   else do
     s <- getLine
-    if tptp opts then do
-      r <- parseTPTP s
+    if optTPTP opts then do
+      r <- readTPTP s
       case r of
         Left e -> putStrLn $ "parse error: " ++ e
         Right phi -> doSearch opts phi
@@ -94,18 +101,24 @@ repl opts = do
 
 batch :: Options -> IO ()
 batch opts
-  | tptp opts = do
+  | optTPTP opts = do
     r <-
-      if fileName opts == "" then do
-        getContents >>= parseTPTP
+      if optFileName opts == "" then do
+        parseTPTPFile stdin
       else
-        parseTPTPFile (fileName opts)
+        withFile (optFileName opts) ReadMode parseTPTPFile
     case r of
       Left e -> putStrLn $ "parse error: " ++ e
       Right phi -> doSearch opts phi
-  | fileName opts == "" = go stdin 1
-  | otherwise = withFile (fileName opts) ReadMode (`go` 1)
+  | optFileName opts == "" = parseFile stdin
+  | otherwise = withFile (optFileName opts) ReadMode parseFile
   where
+    parseTPTPFile h = do
+      setEncoding opts h
+      parseTPTP h
+    parseFile h = do
+      setEncoding opts h
+      go h 1
     go h ln = do
       done <- hIsEOF h
       if done then
@@ -129,9 +142,10 @@ main = do
                             switch (short 't' <> long "time") <*>
                             switch (short 'c' <> long "complete") <*>
                             switch (long "typecheck") <*>
+                            option str (short 'e' <> long "encoding") <*>
                             argument str (metavar "FILE" <> value ""))
                             empty
-  if interactive opts then
+  if optInteractive opts then
     repl opts
   else
     batch opts
