@@ -48,12 +48,13 @@ readTPTP s = do
     Right (phi, _) -> return $ Right phi
 
 data Options = Options
-  { optTPTP :: Bool
+  { optVerbose :: Bool
   , optInteractive :: Bool
   , optProduceProof :: Bool
   , optMeasureTime :: Bool
   , optComplete :: Bool
   , optCheckType :: Bool
+  , optTPTP :: Bool
   , optEncoding :: String
   , optFileName :: String
   }
@@ -65,6 +66,8 @@ createSearchOptions opts = Search.defaultOptions {
 
 doSearch :: Options -> Formula -> IO ()
 doSearch opts phi = (if optMeasureTime opts then timeIt else id) $ do
+  when (optVerbose opts) $
+    putStrLn ("Proving: " ++ show phi)
   if optProduceProof opts then
     case Search.searchIter (createSearchOptions opts) sig phi :: [PTerm] of
       [] -> putStrLn "failure"
@@ -136,12 +139,13 @@ main = do
                             "cfoProver"
                             "An experimental connection-driven prover for intuitionistic first-order logic."
                             (Options <$>
-                            switch (long "tptp") <*>
+                            switch (short 'v' <> long "verbose") <*>
                             switch (short 'i' <> long "interactive") <*>
                             switch (short 'p' <> long "proof") <*>
                             switch (short 't' <> long "time") <*>
                             switch (short 'c' <> long "complete") <*>
                             switch (long "typecheck") <*>
+                            switch (long "tptp") <*>
                             option str (short 'e' <> long "encoding") <*>
                             argument str (metavar "FILE" <> value ""))
                             empty
