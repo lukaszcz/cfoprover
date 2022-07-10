@@ -267,8 +267,10 @@ showAtom :: (Symbol, [Term]) -> String
 showAtom (s, args) = showTerm (UTerm (Fun s args))
 
 showsFormula :: [String] -> Int -> Formula -> ShowS
-showsFormula env _ (Atom (s, args)) =
+showsFormula env p (Atom (s, args)) = showParen (p > atom_prec) $
   showsTerm (UTerm (Fun s (map (subst (map (\x -> tfun (Symbol x 0) []) env)) args)))
+  where
+    atom_prec = 7
 showsFormula env p (Impl a b) =
   showParen (p > impl_prec) $
     showsFormula env (impl_prec + 1) a . showString " → "
@@ -291,24 +293,24 @@ showsFormula env p (Forall s a) =
   showParen (p > forall_prec) $
     showString "∀" . showString s . showsFormula (s : env) forall_prec a
   where
-    forall_prec = 7
+    forall_prec = 8
 showsFormula env p (Exists s a) =
   showParen (p > exists_prec) $
     showString "∃" . showString s . showsFormula (s : env) exists_prec a
   where
-    exists_prec = 7
+    exists_prec = 8
 
 instance Show Formula where
   showsPrec = showsFormula []
 
 -- (line, char)
 type Position = (Int, Int)
-
-data ReadState = ReadState {rSyms :: HashMap String Int, rSymId :: Int}
-data ReadError = ReadError {rPosition :: Position, rMessage :: String}
-
 -- (position, remaining input)
 type Input = (Position, String)
+
+data ReadError = ReadError {rPosition :: Position, rMessage :: String}
+data ReadState = ReadState {rSyms :: HashMap String Int, rSymId :: Int}
+
 type ReadMonad a = ExceptT ReadError (State ReadState) a
 
 readError :: String -> Input -> ReadMonad a
