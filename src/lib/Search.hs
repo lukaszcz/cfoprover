@@ -245,7 +245,7 @@ instance Monoid Bool where
 
 type ProofMonad p = StateT (ProofState p) (IntBindingT TermF (ELogic Bool))
 
-instance MonadLogic m => MonadError () (IntBindingT t m) where
+instance (MonadLogic m, MonadPlus m) => MonadError () (IntBindingT t m) where
     throwError () = empty
     catchError x f = ifte x return (f ())
 
