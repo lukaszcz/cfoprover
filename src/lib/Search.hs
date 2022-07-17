@@ -717,15 +717,16 @@ applyCElims opts a n visited env params s (EEx _ k es phi eas ces) = do
   let sa = head params
   let env0' = tfun sa [] : env0
   let phi' = subst env0' phi
-  s' <- withSubgoal d (insertExElim sa phi' p)
-  addElims s' phi' (map (subst env0') eas)
+  let eas' = map (subst env0') eas
+  s' <- withSubgoal d (insertExElim sa phi' eas' p)
   applyCElims opts a n visited (tail env') (tail params) s' (subst env0' ces)
   where
-    insertExElim sa phi' p _ = do
+    insertExElim sa phi' eas' p _ = do
       s' <- nextSymbol
       updateSpine (\sp p' ->
         sp (mkExElim p (mkALam sa (mkLam s' phi' p'))))
       addParam sa
+      addElims s' phi' eas'
       return s'
 
 createEVars :: CElims -> ProofMonad p ([Term], [Symbol])

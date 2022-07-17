@@ -60,3 +60,7 @@ exists x forall y (R(a) -> forall x (P(x) -> R(x)) -> forall x (R(x) -> P(x) -> 
 exists x forall y (R(x) -> forall x (R(x) -> Q) -> Q)
 exists x forall y (forall x (P(x) -> R(x)) -> forall x (R(x) -> P(x) -> Q) -> P(x) -> Q)
 ∃x(p(x) ∧ ∀y(q(y) → r(x,y))) → (∃x(q(x) ∧ ∀y(p(y) → r(x,y))) → ⊥) → ∀x(p(x) → q(x)) → ⊥
+forall x exists y forall z (P(x) /\ Q(y) /\ R(z)) -> forall z exists y forall x (P(x) /\ Q(y) /\ R(z))
+exists x forall z exists y P(y) -> exists y forall z exists x P(y)
+exists x forall z exists y (P(x) /\ Q(y)) -> exists y forall z exists x (P(x) /\ Q(y))
+exists x exists y P(y) -> exists y forall x P(y)
