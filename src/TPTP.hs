@@ -178,7 +178,7 @@ translateFormula s v (Quantified quant nlst body) = do
             Exists -> tEx s
   let v' = Vars {
              varsNum = varsNum v + length vs
-           , vars = foldr (uncurry HashMap.insert) (vars v) (zip vs' [varsNum v..])
+           , vars = foldr (uncurry HashMap.insert) (vars v) (zip vs' [varsNum v+1..])
            }
   b <- translateFormula s v' body
   return (q vs' b)
@@ -232,7 +232,7 @@ translateTerm s v (Function (Defined (Atom txt)) args) = do
 translateTerm s v (Variable (Var txt)) =
     let name = unpack txt in
     case HashMap.lookup name (vars v) of
-      Just n -> return (tVar s name n)
+      Just n -> return (tVar s name (varsNum v - n))
       Nothing -> throwError "unbound variable"
 translateTerm _ _ _ = throwError "unsupported term"
 
