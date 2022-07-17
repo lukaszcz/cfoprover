@@ -1,5 +1,5 @@
 {-# LANGUAGE MultiParamTypeClasses, FlexibleInstances, DeriveFoldable #-}
-module Search(search, searchIter, searchIterVerbose, Options(..), defaultOptions) where
+module Prover.Search(search, searchIter, searchIterVerbose, Options(..), defaultOptions) where
 
 import Control.Monad.State
 import Control.Monad.Logic
@@ -22,7 +22,8 @@ import qualified Data.DList as DList
 import GHC.Base (maxInt)
 import Math.NumberTheory.Logarithms (integerLog2)
 
-import Types
+import Prover.Types
+import Prover.Proofs
 
 {------------------------------------}
 {- search options -}

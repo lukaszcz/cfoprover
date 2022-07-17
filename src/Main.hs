@@ -6,12 +6,14 @@ import System.IO
 import System.TimeIt
 
 import qualified TPTP
-import qualified Search
-import Types
+import qualified Prover.Search as Search
+import qualified Prover.Parser as Parser
+import Prover.Types
+import Prover.Proofs
 
 tptpSig :: TPTP.FormulaSig Term Formula
 tptpSig = TPTP.FormulaStruct {
-          TPTP.tMinSymbol = Types.tMinSymbol
+          TPTP.tMinSymbol = Prover.Types.tMinSymbol
         , TPTP.tVar = \_ i -> tvar i
         , TPTP.tFun = \s i args -> tfun (Symbol s i) args
         , TPTP.tPred = \s i args -> Atomic (Atom (Symbol s i) args)
@@ -105,8 +107,8 @@ repl opts = do
         Left e -> putStrLn $ "parse error: " ++ e
         Right phi -> doSearch opts phi
     else
-      case readFormula s of
-        Left (ReadError pos e) -> putStrLn $ show (snd pos) ++ ": parse error: " ++ e
+      case Parser.readFormula s of
+        Left (Parser.ReadError pos e) -> putStrLn $ show (snd pos) ++ ": parse error: " ++ e
         Right phi -> doSearch opts phi
     repl opts
 
@@ -136,8 +138,8 @@ batch opts
         return ()
       else do
         s <- hGetLine h
-        case readFormula s of
-          Left (ReadError pos e) -> putStrLn $ show ln ++ ":" ++ show (snd pos) ++ ": parse error: " ++ e
+        case Parser.readFormula s of
+          Left (Parser.ReadError pos e) -> putStrLn $ show ln ++ ":" ++ show (snd pos) ++ ": parse error: " ++ e
           Right phi -> doSearch opts phi
         go h (ln + 1)
 

@@ -29,7 +29,7 @@ library cfoprover-lib
                       dlist,
                       integer-logarithms,
                       mtl
-  exposed-modules:    Types Search
+  exposed-modules:    Prover.Types Prover.Proofs Prover.Search Prover.Parser
   hs-source-dirs:     src/lib
 
 executable cfoprover

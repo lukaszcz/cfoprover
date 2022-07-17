@@ -5,8 +5,10 @@ import System.Exit (exitFailure)
 import System.IO
 import Test.HUnit
 
-import Types
-import qualified Search
+import Prover.Types
+import Prover.Proofs
+import Prover.Parser()
+import qualified Prover.Search as Search
 
 assertProvableWith :: Search.Options -> Formula -> Assertion
 assertProvableWith opts phi =
