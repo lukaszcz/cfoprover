@@ -11,7 +11,6 @@ import Control.Unification.IntVar
 import Data.List
 import Data.Maybe
 import Data.Functor
-import Data.Bifunctor
 import Data.HashSet (HashSet)
 import qualified Data.HashSet as HashSet
 import Data.IntMap.Strict (IntMap)
@@ -53,19 +52,19 @@ data CElims
   -- forall x y . Q(x,y) -> forall z P(x,z) \/ forall z P(y,z) has two
 
 data Eliminator = Eliminator
-  { target :: Atom,
-    elims :: CElims,
-    bindersNum :: Int,
-    cost :: Int
+  { target :: !Atom,
+    elims :: !CElims,
+    bindersNum :: !Int,
+    cost :: !Int
   }
 
 data PFormula
-  = PAtom Atom
-  | PImpl (Formula, [Eliminator]) PFormula
-  | PAnd PFormula PFormula
-  | POr Formula PFormula PFormula -- the first argument is the original disjunction
-  | PForall String PFormula
-  | PExists String Formula PFormula -- the second argument is the original existential
+  = PAtom !Atom
+  | PImpl !Formula ![Eliminator] !PFormula
+  | PAnd !PFormula !PFormula
+  | POr !Formula !PFormula !PFormula -- the first argument is the original disjunction
+  | PForall !String !PFormula
+  | PExists !String !Formula !PFormula -- the second argument is the original existential
 
 instance Substitutable CElims where
   nsubst n env (Elims k es) = Elims k (map (nsubst (n + k) env) es)
@@ -95,8 +94,8 @@ instance Substitutable Eliminator where
 
 instance Substitutable PFormula where
   nsubst n env (PAtom a) = PAtom $ nsubst n env a
-  nsubst n env (PImpl (phi, elims) a) =
-    PImpl (nsubst n env phi, map (nsubst n env) elims) (nsubst n env a)
+  nsubst n env (PImpl phi elims a) =
+    PImpl (nsubst n env phi) (map (nsubst n env) elims) (nsubst n env a)
   nsubst n env (PAnd a b) = PAnd (nsubst n env a) (nsubst n env b)
   nsubst n env (POr phi a b) = POr (nsubst n env phi) (nsubst n env a) (nsubst n env b)
   nsubst n env (PForall s a) = PForall s (nsubst (n + 1) env a)
@@ -113,8 +112,8 @@ prependForallElim (ECase k es idx a1 es1 a2 es2 elims) = ECase (k + 1) (EAApp (t
 prependForallElim (EEx s k es a eas elims) = EEx s (k + 1) (EAApp (tvar k) : es) a eas elims
 
 compileFormula :: Formula -> PFormula
-compileFormula (Atom a) = PAtom a
-compileFormula (Impl a b) = PImpl (a, compileElims a) (compileFormula b)
+compileFormula (Atomic a) = PAtom a
+compileFormula (Impl a b) = PImpl a (compileElims a) (compileFormula b)
 compileFormula (And a b) = PAnd (compileFormula a) (compileFormula b)
 compileFormula phi@(Or a b) = POr phi (compileFormula a) (compileFormula b)
 compileFormula (Forall s a) = PForall s (compileFormula a)
@@ -133,10 +132,10 @@ compileForallElims =
   map (\e -> e{ elims = prependForallElim (elims e)
               , bindersNum = bindersNum e + 1
               , cost = cost e
-                  + if any (varOccurs (bindersNum e)) (snd (target e)) then 1 else 5 })
+                  + if any (varOccurs (bindersNum e)) (atomArgs (target e)) then 1 else 5 })
 
 compileElims :: Formula -> [Eliminator]
-compileElims (Atom a) = compileAtomElims a
+compileElims (Atomic a) = compileAtomElims a
 compileElims (Impl a b) = compileImplElims a (compileElims b)
 compileElims (And a b) =
   map (\e -> e {elims = prependElim (EProj ILeft) (elims e)}) (compileElims a)
@@ -159,8 +158,8 @@ compileElims (Exists s a) =
     eas = compileElims a
 
 decompileFormula :: PFormula -> Formula
-decompileFormula (PAtom a) = Atom a
-decompileFormula (PImpl (phi, _) a) = Impl phi (decompileFormula a)
+decompileFormula (PAtom a) = Atomic a
+decompileFormula (PImpl phi _ a) = Impl phi (decompileFormula a)
 decompileFormula (PAnd a b) = And (decompileFormula a) (decompileFormula b)
 decompileFormula (POr a _ _) = a
 decompileFormula (PForall s a) = Forall s (decompileFormula a)
@@ -285,7 +284,7 @@ getDepthMap :: ProofMonad p (IntMap Int)
 getDepthMap = get <&> head . depthMaps
 
 findElims' :: Atom -> [Context] -> [(Symbol,Eliminator)]
-findElims' (pred, _) ctxs =
+findElims' (Atom pred _) ctxs =
   sortBy (\x y -> compare (cost (snd x)) (cost (snd y))) $
   concat $
   zipWith (\c -> map (\(s,e) -> (s,e{cost = cost e + c}))) [0,5..] $
@@ -297,7 +296,7 @@ findElims a = getContexts <&> findElims' a
 addElims' :: Symbol -> Formula -> [Eliminator] -> Context -> Context
 addElims' s phi es ctx = ctx{cElims = elims', cDecls = decls'}
   where
-    elims' = foldr (\e -> IntMap.insertWith (++) (sid $ fst (target e)) [(s,e)])
+    elims' = foldr (\e -> IntMap.insertWith (++) (sid $ atomSym (target e)) [(s,e)])
                     (cElims ctx)
                     es
     decls' = IntMap.insert (sid s) (s, phi) (cDecls ctx)
@@ -394,9 +393,9 @@ withSubgoal d f = do
   return a
 
 applyBindingsInAtom :: Atom -> ProofMonad p Atom
-applyBindingsInAtom (s, args) = do
+applyBindingsInAtom (Atom s args) = do
   args' <- mapM U.applyBindings args
-  return (s, args')
+  return $! Atom s args'
 
 checkCase :: Symbol -> Atom -> ProofMonad p ()
 checkCase s a = do
@@ -440,14 +439,14 @@ nextSymbol = nextSymbolNamed ""
 {- terms & parameters -}
 
 unifyAtoms :: Atom -> Atom -> ProofMonad p ()
-unifyAtoms (s, args1) (s', args2) | s == s' = zipWithM_ U.unify args1 args2
+unifyAtoms (Atom s args1) (Atom s' args2) | s == s' = zipWithM_ U.unify args1 args2
 unifyAtoms _ _ = empty
 
 generateTerm :: Int -> ProofMonad p Term
 generateTerm n = do
   params <- getParams
-  IntSet.foldl' (\a c -> return (tfun (Symbol ("_c" ++ show c) c) []) <|> a)
-    (return (tfun (Symbol "_c" (-1)) []) <|> cont)
+  IntSet.foldl' (\a c -> (return $! tfun (Symbol ("_c" ++ show c) c) []) <|> a)
+    ((return $! tfun (Symbol "_c" (-1)) []) <|> cont)
     params
   where
     cont =
@@ -507,14 +506,14 @@ memoizeProof opts a su ts p = do
     let decls' = filter (\(s,_) -> fromMaybe maxInt (IntMap.lookup (sid s) mp) > 1) decls
     if length decls' <= optMemGenMaxSymbols opts then do
       -- get evars in decls
-      vs <- foldl' (\acc (_, phi) -> foldAtoms (\a acc -> liftA2 (++) (lift $ U.getFreeVarsAll (snd a)) acc) acc phi) (pure []) decls'
+      vs <- foldl' (\acc (_, phi) -> foldAtoms (\a acc -> liftA2 (++) (lift $ U.getFreeVarsAll (atomArgs a)) acc) acc phi) (pure []) decls'
       if null vs then do
         -- get ids of symbols in decls
         sut' <- foldl'
               (\acc (_, phi) ->
                 foldAtoms
-                  (\a acc -> acc >>= \su -> U.applyBindingsAll (snd a) >>= \args ->
-                    return $ foldl' (flip extractSyms) (IntSet.insert (sid (fst a)) su) args)
+                  (\a acc -> acc >>= \su -> U.applyBindingsAll (atomArgs a) >>= \args ->
+                    return $ foldl' (flip extractSyms) (IntSet.insert (sid (atomSym a)) su) args)
                   acc phi)
               (return IntSet.empty)
               decls'
@@ -522,7 +521,7 @@ memoizeProof opts a su ts p = do
         params <- IntSet.intersection su'' <$> getParams
         let params' = IntSet.filter (\id -> fromMaybe maxInt (IntMap.lookup id mp) > 1) params
         let p' = IntSet.foldl' (\p sid -> mkALam (Symbol "" sid) p) (foldl' (\p (s, phi) -> mkLam s phi p) p decls') params'
-        let phi' = IntSet.foldl' (\a sid -> Forall "" (abstract (Symbol "" sid) a)) (foldl' (\a (_, phi) -> Impl phi a) (Atom a) decls') params'
+        let phi' = IntSet.foldl' (\a sid -> Forall "" (abstract (Symbol "" sid) a)) (foldl' (\a (_, phi) -> Impl phi a) (Atomic a) decls') params'
         let es' = IntSet.foldl' (\es _ -> compileForallElims es) (foldl' (\es (_, phi) -> compileImplElims phi es) (compileAtomElims a) decls') params'
         s <- withSubgoal 1 (\_ -> insertElims p' phi' es')
         let p'' = foldr (\(s, _) p -> mkApp p (mkVar s)) (IntSet.foldr (\sid p -> mkAApp p (tfun (Symbol "" sid) [])) (mkVar s) params') decls'
@@ -536,7 +535,7 @@ memoizeProof opts a su ts p = do
   where
     cont d = do
       let elims = compileAtomElims a
-      s <- withSubgoal d (\_ -> insertElims p (Atom a) elims)
+      s <- withSubgoal d (\_ -> insertElims p (Atomic a) elims)
       return (IntSet.singleton (sid s), DList.empty, 1, mkVar s)
     insertElims p phi elims = do
       s <- nextSymbol
@@ -552,7 +551,7 @@ memoizeProof opts a su ts p = do
 search' :: Proof p => Options -> Int -> [Atom] -> [Term] -> PFormula ->
   ProofMonad p (IntSet, DList Term, Int, p)
 search' _ 0 _ _ _ = failDepth
-search' _ _ _ _ (PAtom (s, _)) | s == sBottom = empty
+search' _ _ _ _ (PAtom (Atom s _)) | s == sBottom = empty
 search' opts n visited env (PAtom a) = do
   bs <- lift $ mapM (atomEquals a') visited
   if or bs then
@@ -561,7 +560,7 @@ search' opts n visited env (PAtom a) = do
     searchElim opts n visited a'
   where
     a' = subst env a
-search' opts n visited env a@(PImpl (phi, _) a') = do
+search' opts n visited env a@(PImpl phi _ a') = do
   b <- isInContext (subst env phi)
   if b then do
     s <- nextSymbol
@@ -601,7 +600,7 @@ intros opts n env a = do
 
 intros' :: Proof p => Options -> Int -> [Term] -> PFormula ->
   ProofMonad p (IntSet, DList Term, Int, p)
-intros' opts n env (PImpl (phi, elims) a) = do
+intros' opts n env (PImpl phi elims a) = do
   let phi' = subst env phi
   b <- addToContext phi'
   if b then do
@@ -647,7 +646,7 @@ searchAfterIntros opts n env ga@(PAtom a) = do
   foldr apElim empty (elims es1 es2)
   where
     elims es1 es2 = sortBy (\x y -> compare (cost (snd x)) (cost (snd y))) (es1 ++ es2)
-    apElim (s, e) acc | fst (target e) == sBottom = wrapExFalso ga $ applyElim opts (n - 1) [] s e aBottom <|> acc
+    apElim (s, e) acc | atomSym (target e) == sBottom = wrapExFalso ga $ applyElim opts (n - 1) [] s e aBottom <|> acc
     apElim (s, e) acc = applyElim opts (n - 1) [] s e (subst env a) <|> acc
 searchAfterIntros opts n env g = search' opts n [] env g <|> searchExFalso opts n (subst env g)
 
@@ -699,7 +698,7 @@ applyCElims opts a n visited env params s (ECase k es idx phi1 es1 phi2 es2 ces)
   where
     solveCaseSubgoal env0 p g = do
       checkCase s a
-      (_, _, _, pg) <- search' opts n [] [] (PImpl (subst env0 phi2, map (subst env0) es2) g)
+      (_, _, _, pg) <- search' opts n [] [] (PImpl (subst env0 phi2) (map (subst env0) es2) g)
       s' <- nextSymbol
       let phi1' = subst env0 phi1
       updateSpine (\sp p' ->
@@ -744,12 +743,12 @@ applyElim opts n visited s e a =
   if optComplete opts then
     cont
   else do
-    vs <- mapM (lift . U.getFreeVars) (snd a)
+    vs <- mapM (lift . U.getFreeVars) (atomArgs a)
     if null vs then once cont else cont
   where
     cont = do
       (env, params) <- createEVars (elims e)
-      let a' = second (map (subst (reverse env))) (target e)
+      let a' = Atom (atomSym (target e)) (map (subst (reverse env)) (atomArgs (target e)))
       unifyAtoms a a'
       applyCElims opts a n (a:visited) env params s (elims e)
 

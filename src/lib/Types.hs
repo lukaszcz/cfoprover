@@ -69,15 +69,23 @@ tvar x = UTerm $ Var x
 tfun :: Symbol -> [Term] -> Term
 tfun f args = UTerm $ Fun f args
 
-type Atom = (Symbol, [Term])
+data Atom = Atom !Symbol ![Term] deriving (Eq, Generic)
+
+instance Hashable Atom where
+
+atomArgs :: Atom -> [Term]
+atomArgs (Atom _ args) = args
+
+atomSym :: Atom -> Symbol
+atomSym (Atom s _) = s
 
 data Formula
-  = Atom Atom
-  | Impl Formula Formula
-  | And Formula Formula
-  | Or Formula Formula
-  | Forall String Formula
-  | Exists String Formula
+  = Atomic !Atom
+  | Impl !Formula !Formula
+  | And !Formula !Formula
+  | Or !Formula !Formula
+  | Forall !String !Formula
+  | Exists !String !Formula
   deriving (Generic)
 
 -- this is not entirely correct because the quantifier variable names are not
@@ -85,7 +93,7 @@ data Formula
 instance Hashable Formula where
 
 mapAtoms' :: Applicative m => (Int -> [String] -> Atom -> m Atom) -> Int -> [String] -> Formula -> m Formula
-mapAtoms' f n env (Atom a) = Atom <$> f n env a
+mapAtoms' f n env (Atomic a) = Atomic <$> f n env a
 mapAtoms' f n env (Impl x y) = Impl <$> mapAtoms' f n env x <*> mapAtoms' f n env y
 mapAtoms' f n env (And x y) = And <$> mapAtoms' f n env x <*> mapAtoms' f n env y
 mapAtoms' f n env (Or x y) = Or <$> mapAtoms' f n env x <*> mapAtoms' f n env y
@@ -99,7 +107,7 @@ mapAtoms :: (Int -> [String] -> Atom -> Atom) -> Formula -> Formula
 mapAtoms f a = runIdentity $ mapAtomsM (\n env x -> return (f n env x)) a
 
 foldAtoms :: (Atom -> a -> a) -> a -> Formula -> a
-foldAtoms f acc (Atom a) = f a acc
+foldAtoms f acc (Atomic a) = f a acc
 foldAtoms f acc (Impl x y) = foldAtoms f (foldAtoms f acc y) x
 foldAtoms f acc (And x y) = foldAtoms f (foldAtoms f acc y) x
 foldAtoms f acc (Or x y) = foldAtoms f (foldAtoms f acc y) x
@@ -107,11 +115,11 @@ foldAtoms f acc (Forall _ x) = foldAtoms f acc x
 foldAtoms f acc (Exists _ x) = foldAtoms f acc x
 
 atomEquals :: BindingMonad TermF IntVar m => Atom -> Atom -> m Bool
-atomEquals (s1, args1) (s2, args2) | s1 == s2 = and <$> zipWithM equals args1 args2
+atomEquals (Atom s1 args1) (Atom s2 args2) | s1 == s2 = and <$> zipWithM equals args1 args2
 atomEquals _ _ = return False
 
 mapTermsInFormula :: Monad m => (Term -> m Term) -> Formula -> m Formula
-mapTermsInFormula f = mapAtomsM (\_ _ (s,args) -> mapM f args >>= \args' -> pure (s, args'))
+mapTermsInFormula f = mapAtomsM (\_ _ (Atom s args) -> mapM f args >>= \args' -> pure $! Atom s args')
 
 data Signature = Signature
   { functionSymbols :: [Symbol],
@@ -127,7 +135,7 @@ createSignature phi =
     , predicateSymbols = sortUnique (predicateSymbols sig) }
   where
     sig = go (Signature [] [] IntMap.empty 0) phi
-    go sig (Atom (s, args)) = goTerm True sig (UTerm (Fun s args))
+    go sig (Atomic (Atom s args)) = goTerm True sig (UTerm (Fun s args))
     go sig (Impl a b) = go (go sig a) b
     go sig (And a b) = go (go sig a) b
     go sig (Or a b) = go (go sig a) b
@@ -159,28 +167,28 @@ sBottom :: Symbol
 sBottom = Symbol "⊥" 0
 
 aBottom :: Atom
-aBottom = (sBottom, [])
+aBottom = Atom sBottom []
 
 fBottom :: Formula
-fBottom = Atom aBottom
+fBottom = Atomic aBottom
 
 sTop :: Symbol
 sTop = Symbol "⊤" 1
 
 aTop :: Atom
-aTop = (sTop, [])
+aTop = Atom sTop []
 
 fTop :: Formula
-fTop = Atom aTop
+fTop = Atomic aTop
 
 sEquality :: Symbol
 sEquality = Symbol "=" 2
 
 aEqual :: Term -> Term -> Atom
-aEqual t1 t2 = (sEquality, [t1, t2])
+aEqual t1 t2 = Atom sEquality [t1, t2]
 
 fEqual :: Term -> Term -> Formula
-fEqual t1 t2 = Atom (aEqual t1 t2)
+fEqual t1 t2 = Atomic (aEqual t1 t2)
 
 tMinSymbol :: Int
 tMinSymbol = 3
@@ -218,10 +226,10 @@ instance Abstractable Term where
   nabstract _ _ t = t
 
 instance Substitutable Atom where
-  nsubst n env (s, args) = (s, map (nsubst n env) args)
+  nsubst n env (Atom s args) = Atom s (map (nsubst n env) args)
 
 instance Abstractable Atom where
-  nabstract n s (s', args) = (s', map (nabstract n s) args)
+  nabstract n s (Atom s' args) = Atom s' (map (nabstract n s) args)
 
 instance Substitutable Formula where
   nsubst n env = mapAtoms (\m _ -> nsubst (n + m) env)
@@ -230,7 +238,7 @@ instance Abstractable Formula where
   nabstract n s = mapAtoms (\m _ -> nabstract (n + m) s)
 
 instance Eq Formula where
-  (Atom (s1, args1)) == (Atom (s2, args2)) = s1 == s2 && args1 == args2
+  (Atomic (Atom s1 args1)) == (Atomic (Atom s2 args2)) = s1 == s2 && args1 == args2
   (Impl a1 b1) == (Impl a2 b2) = a1 == a2 && b1 == b2
   (And a1 b1) == (And a2 b2) = a1 == a2 && b1 == b2
   (Or a1 b1) == (Or a2 b2) = a1 == a2 && b1 == b2
@@ -267,7 +275,7 @@ showAtom :: (Symbol, [Term]) -> String
 showAtom (s, args) = showTerm (UTerm (Fun s args))
 
 showsFormula :: [String] -> Int -> Formula -> ShowS
-showsFormula env p (Atom (s, args)) = showParen (p > atom_prec) $
+showsFormula env p (Atomic (Atom s args)) = showParen (p > atom_prec) $
   showsTerm (UTerm (Fun s (map (subst (map (\x -> tfun (Symbol x 0) []) env)) args)))
   where
     atom_prec = 7
@@ -411,7 +419,7 @@ readAtom s =
     Just (sf, s') -> do
       sym <- getSymbol sf
       (args, s'') <- readArgs readTerm s'
-      return (Atom (sym, args), s'')
+      return (Atomic (Atom sym args), s'')
     _ -> readError "expected an atom" s
 
 readNegQuant :: Input -> ReadMonad (Formula, Input)
