@@ -27,6 +27,7 @@ library cfoprover-lib
                       containers,
                       unordered-containers,
                       dlist,
+                      integer-logarithms,
                       mtl
   exposed-modules:    Types Search
   hs-source-dirs:     src/lib

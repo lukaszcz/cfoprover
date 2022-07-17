@@ -33,7 +33,7 @@ instance Hashable Symbol where
   hashWithSalt k s = hashWithSalt k (sid s)
 
 -- terms and formulas use 0-based de-Bruijn indices
-data TermF t = Var Int | Fun Symbol [t] deriving (Eq, Functor, Foldable, Traversable)
+data TermF t = Var !Int | Fun Symbol ![t] deriving (Eq, Functor, Foldable, Traversable)
 
 instance Unifiable TermF where
   zipMatch (Var x) (Var y)

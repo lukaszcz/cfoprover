@@ -20,6 +20,7 @@ import qualified Data.IntSet as IntSet
 import Data.DList (DList)
 import qualified Data.DList as DList
 import GHC.Base (maxInt)
+import Math.NumberTheory.Logarithms (integerLog2)
 
 import Types
 
@@ -442,7 +443,10 @@ unifyAtoms :: Atom -> Atom -> ProofMonad p ()
 unifyAtoms (Atom s args1) (Atom s' args2) | s == s' = zipWithM_ U.unify args1 args2
 unifyAtoms _ _ = empty
 
+-- generateTerm logDepth
 generateTerm :: Int -> ProofMonad p Term
+generateTerm 0 = failDepth
+generateTerm 1 = (return $! tfun (Symbol "_c" (-1)) []) <|> failDepth
 generateTerm n = do
   params <- getParams
   IntSet.foldl' (\a c -> (return $! tfun (Symbol ("_c" ++ show c) c) []) <|> a)
@@ -450,7 +454,7 @@ generateTerm n = do
     params
   where
     cont =
-      if n == 0 then
+      if n == 2 then
         failDepth
       else do
         ps <- get
@@ -463,9 +467,10 @@ generateTerm n = do
             return (tfun s args) <|> a
 
 resolveTermEVars :: Int -> Term -> ProofMonad p ()
-resolveTermEVars n t = lift (U.getFreeVars t) >>= \v -> resolveEVars n v
+resolveTermEVars n t = lift (U.getFreeVars t) >>= \v -> resolveEVars v
   where
-    resolveEVars n = mapM_ (\v -> generateTerm n >>= \t -> lift $ U.bindVar v t)
+    resolveEVars = mapM_ (\v -> generateTerm m >>= \t -> lift $ U.bindVar v t)
+    m = integerLog2 (toInteger n + 1)
 
 -- returns the set of all symbols occurring in the terms
 checkParams :: Traversable t => t Term -> ProofMonad p IntSet
