@@ -127,7 +127,7 @@ addPred name = do
     Just k -> return k
     Nothing -> do
       k <- getIdent
-      put (s{preds = HashMap.insert name k (preds s)})
+      state (\s -> ((), s{preds = HashMap.insert name k (preds s)}))
       return k
 
 addFun :: String -> Translator Int
@@ -137,7 +137,7 @@ addFun name = do
     Just k -> return k
     Nothing -> do
       k <- getIdent
-      put (s{funs = HashMap.insert name k (funs s)})
+      state (\s -> ((), s{funs = HashMap.insert name k (funs s)}))
       return k
 
 --------------------------------------------------------------------------------------
@@ -159,8 +159,8 @@ translateFormula s _ (Atomic (Predicate (Reserved (Standard Falsum)) _)) =
     return $ tFalse s
 translateFormula s v (Atomic (Predicate (Defined (Atom txt)) args)) = do
   let name = unpack txt
-  n <- addPred name
-  translatePred s v name n args
+  id <- addPred name
+  translatePred s v name id args
 translateFormula s v (Atomic (Equality left sign right)) = do
   l <- translateTerm s v left
   r <- translateTerm s v right
@@ -220,15 +220,15 @@ translateConnective s v ReversedImplication left right = do
     return (tImpl s r l)
 
 translatePred :: FormulaSig a b -> Vars -> String -> Int -> [Term] -> Translator b
-translatePred s v name n args = do
+translatePred s v name id args = do
   as <- mapM (translateTerm s v) args
-  return (tPred s name n as)
+  return (tPred s name id as)
 
 translateTerm :: FormulaSig a b -> Vars -> Term -> Translator a
 translateTerm s v (Function (Defined (Atom txt)) args) = do
   let name = unpack txt
-  n <- addFun name
-  translateFunc s v name n args
+  id <- addFun name
+  translateFunc s v name id args
 translateTerm s v (Variable (Var txt)) =
     let name = unpack txt in
     case HashMap.lookup name (vars v) of
@@ -237,6 +237,6 @@ translateTerm s v (Variable (Var txt)) =
 translateTerm _ _ _ = throwError "unsupported term"
 
 translateFunc :: FormulaSig a b -> Vars -> String -> Int -> [Term] -> Translator a
-translateFunc s v name n args = do
+translateFunc s v name id args = do
   as <- mapM (translateTerm s v) args
-  return (tFun s name n as)
+  return (tFun s name id as)
