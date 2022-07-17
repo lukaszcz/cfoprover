@@ -68,19 +68,27 @@ doSearch :: Options -> Formula -> IO ()
 doSearch opts phi = (if optMeasureTime opts then timeIt else id) $ do
   when (optVerbose opts) $
     putStrLn ("Proving: " ++ show phi)
-  if optProduceProof opts then
-    case Search.searchIter (createSearchOptions opts) sig phi :: [PTerm] of
+  if optProduceProof opts || optCheckType opts then do
+    r <- goSearch :: IO [PTerm]
+    case r of
       [] -> putStrLn "failure"
       x:_ -> do
-        print x
+        if optProduceProof opts then print x else putStrLn "success"
         when (optCheckType opts && not (check x phi)) $
           putStrLn "typecheck failure"
-  else
-    case Search.searchIter (createSearchOptions opts) sig phi :: [()] of
+  else do
+    r <- goSearch :: IO [()]
+    case r of
       [] -> putStrLn "failure"
       _ -> putStrLn "success"
   where
     sig = createSignature phi
+    goSearch :: Proof p => IO [p]
+    goSearch =
+      if optVerbose opts then
+        Search.searchIterVerbose (createSearchOptions opts) sig phi
+      else
+        return $ Search.searchIter (createSearchOptions opts) sig phi
 
 repl :: Options -> IO ()
 repl opts = do

@@ -1,5 +1,5 @@
 {-# LANGUAGE MultiParamTypeClasses, FlexibleInstances, DeriveFoldable #-}
-module Search(search, searchIter, Options(..), defaultOptions) where
+module Search(search, searchIter, searchIterVerbose, Options(..), defaultOptions) where
 
 import Control.Monad.State
 import Control.Monad.Logic
@@ -788,3 +788,15 @@ searchIter opts sig formula = go 2
         Left True -> go (n + 1)
         Left False -> []
         Right ps -> ps
+
+searchIterVerbose :: Proof p => Options -> Signature -> Formula -> IO [p]
+searchIterVerbose opts sig formula = go 2
+  where
+    phi = compileFormula formula
+    ps = initProofState sig
+    go n = do
+      putStrLn ("searching depth " ++ show n ++ "...")
+      case searchCompiled opts ps n phi of
+        Left True -> go (n + 1)
+        Left False -> return []
+        Right ps -> return ps
