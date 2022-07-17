@@ -146,7 +146,7 @@ main = do
                             switch (short 'c' <> long "complete") <*>
                             switch (long "typecheck") <*>
                             switch (long "tptp") <*>
-                            option str (short 'e' <> long "encoding") <*>
+                            option str (short 'e' <> long "encoding" <> value "") <*>
                             argument str (metavar "FILE" <> value ""))
                             empty
   if optInteractive opts then
