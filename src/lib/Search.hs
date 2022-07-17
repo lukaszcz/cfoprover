@@ -651,7 +651,7 @@ searchAfterIntros opts n env ga@(PAtom a) = do
   foldr apElim empty (elims es1 es2)
   where
     elims es1 es2 = sortBy (\x y -> compare (cost (snd x)) (cost (snd y))) (es1 ++ es2)
-    apElim (s, e) acc | atomSym (target e) == sBottom = wrapExFalso ga $ applyElim opts (n - 1) [] s e aBottom <|> acc
+    apElim (s, e) acc | atomSym (target e) == sBottom = wrapExFalso ga (applyElim opts (n - 1) [] s e aBottom) <|> acc
     apElim (s, e) acc = applyElim opts (n - 1) [] s e (subst env a) <|> acc
 searchAfterIntros opts n env g = search' opts n [] env g <|> searchExFalso opts n (subst env g)
 

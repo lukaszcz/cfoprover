@@ -59,3 +59,4 @@ exists x forall y (R(a) -> forall x (R(x) -> Q) -> Q)
 exists x forall y (R(a) -> forall x (P(x) -> R(x)) -> forall x (R(x) -> P(x) -> Q) -> P(x) -> Q)
 exists x forall y (R(x) -> forall x (R(x) -> Q) -> Q)
 exists x forall y (forall x (P(x) -> R(x)) -> forall x (R(x) -> P(x) -> Q) -> P(x) -> Q)
+∃x(p(x) ∧ ∀y(q(y) → r(x,y))) → (∃x(q(x) ∧ ∀y(p(y) → r(x,y))) → ⊥) → ∀x(p(x) → q(x)) → ⊥

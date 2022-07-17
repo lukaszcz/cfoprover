@@ -271,8 +271,8 @@ showsTerm (UTerm (Fun s args)) = showsSymbol s . sargs
 showTerm :: Term -> String
 showTerm t = showsTerm t ""
 
-showAtom :: (Symbol, [Term]) -> String
-showAtom (s, args) = showTerm (UTerm (Fun s args))
+showAtom :: Atom -> String
+showAtom (Atom s args) = showTerm (UTerm (Fun s args))
 
 showsFormula :: [String] -> Int -> Formula -> ShowS
 showsFormula env p (Atomic (Atom s args)) = showParen (p > atom_prec) $
